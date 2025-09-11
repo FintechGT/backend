@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean, TIMESTAMP, text
-from app.db.database import Base  # Ajusta si tienes otra ruta al Base
+from app.db.database import Base 
 
 class User(Base):
     __tablename__ = "Usuario"

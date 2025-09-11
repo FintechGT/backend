@@ -23,7 +23,8 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
-    access_token = create_access_token({"sub": user.Correo})
+  
+    access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.get("/me")
