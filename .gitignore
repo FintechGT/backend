@@ -1,4 +1,20 @@
+<<<<<<< HEAD
 __pycache__/
 *.pyc
 .env
 
+=======
+# entornos virtuales
+venv/
+.env
+__pycache__/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
+
+# Archivos temporales
+*.log
+*.sqlite3
+>>>>>>> origin/develop

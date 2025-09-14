@@ -23,7 +23,7 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
-    # Aquí sí está bien: el sub será el ID del usuario
+  
     access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
 
