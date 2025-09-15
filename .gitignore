@@ -1,60 +1,19 @@
-# --- Python básico ---
+
 __pycache__/
-*.py[cod]
-*$py.class
-*.pyo
-
-# Empaquetado / builds
-build/
-dist/
-*.egg-info/
-*.egg
-
-# Virtualenvs
-.venv/
-venv/
-env/
-ENV/
-.venv*/
-__pypackages__/
-
-# Cachés y herramientas
-.cache/
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.mypy_cache/
-.ruff_cache/
-.pytype/
-
-# Notebooks
-.ipynb_checkpoints/
-
-# Logs
-*.log
-logs/
-
-# Config local / secretos
+*.pyc
 .env
-.env.*
-!.env.example
-*.pem
-*.key
-*.crt
 
-# Bases de datos locales
-*.db
-*.sqlite3
+=======
+# entornos virtuales
+venv/
+.env
+__pycache__/
+*.pyc
 
-# IDEs / SO
-.vscode/*
-!.vscode/settings.json
-!.vscode/extensions.json
+# IDEs
+.vscode/
 .idea/
-*.iml
-.DS_Store
-Thumbs.db
 
-
+# Archivos temporales
+*.log
+*.sqlite3
