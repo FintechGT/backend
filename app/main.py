@@ -11,23 +11,29 @@ app = FastAPI(
     redoc_url=None
 )
 
-# CORS
-origins_env = getattr(settings, "CORS_ORIGINS", "*")
-allow_origins = ["*"] if origins_env == "*" else [o.strip() for o in origins_env.split(",")]
+# === CORS ===
+
+allow_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://frontend-web-rust-nine.vercel.app",   
+]
+
+allow_origin_regex = r"https://.*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Routers
+
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(auth.router,   prefix="/auth",   tags=["auth"])
 app.include_router(solicitudes.router, prefix="/solicitudes", tags=["solicitudes"])
-
 
 @app.get("/")
 def root():
