@@ -9,11 +9,11 @@ def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
     origins = [o.strip() for o in raw.split(",") if o.strip()]
-    # Evita '*' cuando allow_credentials=True
+
     return [o for o in origins if o != "*"]
 
 
-# Orígenes desde ENV (+ fallback útiles para dev/preview)
+
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 fallback = [
     "http://localhost:3000",

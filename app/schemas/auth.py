@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from pydantic import ConfigDict  # Pydantic v2
+from pydantic import ConfigDict  
 
 
 class UserRegister(BaseModel):
@@ -18,7 +18,6 @@ class UserResponse(BaseModel):
     username: str = Field(..., alias="Nombre")
     email: EmailStr = Field(..., alias="Correo")
 
-    # En Pydantic v2 se usa model_config (reemplaza a Config)
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
