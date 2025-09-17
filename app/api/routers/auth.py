@@ -1,4 +1,3 @@
-# app/api/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,7 +10,6 @@ from app.api.deps import get_current_user
 from app.db.models.user import User
 from app.core.config import settings
 
-# Verificación de ID token de Google
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
@@ -27,35 +25,22 @@ router = APIRouter()
 
 @router.post("/register", response_model=UserResponse)
 async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
-    # (opcional) forzar registro solo con Google
     if getattr(settings, "AUTH_GOOGLE_ONLY", False):
         raise HTTPException(status_code=400, detail="El registro es solo con Google")
 
     email = data.email.strip().lower()
     domain = email.split("@")[-1] if "@" in email else ""
 
-    # (opcional) limitar a un dominio fijo (si lo defines en settings)
     if getattr(settings, "ALLOWED_EMAIL_DOMAIN", ""):
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Solo correos @{allowed}",
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Solo correos @{allowed}")
 
-    # Bloquear dominios desechables
     if is_disposable_domain(domain):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se permiten correos temporales/desechables",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No se permiten correos temporales/desechables")
 
-    # Validar registros MX del dominio
     if not has_mx_records(domain):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Dominio de correo inválido (sin registros MX)",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dominio de correo inválido (sin registros MX)")
 
     try:
         user = await AuthService.register_user(data, db)
@@ -69,7 +54,6 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     user = await AuthService.authenticate_user(data.email, data.password, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
-
     access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -80,7 +64,7 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
         info = google_id_token.verify_oauth2_token(
             payload.id_token,
             google_requests.Request(),
-            settings.GOOGLE_CLIENT_ID,  # debe estar en tu .env / Railway
+            settings.GOOGLE_CLIENT_ID,
         )
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de Google inválido")
@@ -94,13 +78,11 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     email = str(info.get("email", "")).lower()
     nombre = (info.get("name") or info.get("given_name") or email.split("@")[0])[:30]
 
-    # Si configuraste dominio permitido, respétalo aquí también
     if getattr(settings, "ALLOWED_EMAIL_DOMAIN", ""):
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Solo correos @{allowed}")
 
-    # Si el usuario no existe, créalo "verificado"
     result = await db.execute(select(User).where(User.Correo == email))
     user = result.scalar_one_or_none()
     if user is None:

@@ -9,9 +9,7 @@ def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
     origins = [o.strip() for o in raw.split(",") if o.strip()]
-
     return [o for o in origins if o != "*"]
-
 
 
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
