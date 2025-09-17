@@ -10,13 +10,9 @@ from app.api.deps import get_current_user
 from app.db.models.user import User
 from app.core.config import settings
 
-# Google ID token verification
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
-
-# Para crear usuario dummy si viene por Google
 import secrets
 from passlib.context import CryptContext
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter()
@@ -24,12 +20,14 @@ router = APIRouter()
 
 @router.post("/register", response_model=UserResponse)
 async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
-    # Opcional: forzar solo Google
+    # (opcional) forzar registro solo con Google
     if getattr(settings, "AUTH_GOOGLE_ONLY", False):
         raise HTTPException(status_code=400, detail="El registro es solo con Google")
 
-    # Opcional: limitar dominio también en el registro clásico
-    if settings.ALLOWED_EMAIL_DOMAIN and not data.email.lower().endswith(f"@{settings.ALLOWED_EMAIL_DOMAIN}"):
+    # (opcional) limitar dominio en el registro clásico
+    if settings.ALLOWED_EMAIL_DOMAIN and not data.email.lower().endswith(
+        f"@{settings.ALLOWED_EMAIL_DOMAIN}"
+    ):
         raise HTTPException(status_code=400, detail=f"Solo correos @{settings.ALLOWED_EMAIL_DOMAIN}")
 
     try:
@@ -51,7 +49,11 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
 @router.post("/google")
 async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get_db)):
-    # 1) Verificar token de Google con audiencia (tu client_id)
+    # Lazy imports: evita que la app caiga si 'requests' o google-auth no están instalados.
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+
+    # 1) Verificar token de Google usando tu CLIENT_ID como audiencia
     try:
         info = google_id_token.verify_oauth2_token(
             payload.id_token,
@@ -61,7 +63,7 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     except Exception:
         raise HTTPException(status_code=401, detail="Token de Google inválido")
 
-    # (redundante, pero mantenemos la validación del issuer)
+    # Validaciones adicionales
     if info.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
         raise HTTPException(status_code=401, detail="Issuer inválido")
 
@@ -71,7 +73,7 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     email = str(info.get("email", "")).lower()
     nombre = (info.get("name") or info.get("given_name") or email.split("@")[0])[:30]
 
-    # 2) Restringir dominio si lo definiste (p. ej. gmail.com)
+    # 2) Restringir dominio si se configuró
     if settings.ALLOWED_EMAIL_DOMAIN:
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
