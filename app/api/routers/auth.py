@@ -10,6 +10,10 @@ from app.api.deps import get_current_user
 from app.db.models.user import User
 from app.core.config import settings
 
+# Verificación de ID token de Google
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+
 import secrets
 from passlib.context import CryptContext
 
@@ -24,11 +28,14 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if getattr(settings, "AUTH_GOOGLE_ONLY", False):
         raise HTTPException(status_code=400, detail="El registro es solo con Google")
 
-    # (opcional) limitar dominio en el registro clásico
+    # (opcional) limitar dominio también en el registro clásico
     if settings.ALLOWED_EMAIL_DOMAIN and not data.email.lower().endswith(
         f"@{settings.ALLOWED_EMAIL_DOMAIN}"
     ):
-        raise HTTPException(status_code=400, detail=f"Solo correos @{settings.ALLOWED_EMAIL_DOMAIN}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Solo correos @{settings.ALLOWED_EMAIL_DOMAIN}",
+        )
 
     try:
         user = await AuthService.register_user(data, db)
@@ -47,12 +54,9 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
+# /auth/google: crea o inicia sesión con Google
 @router.post("/google")
 async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get_db)):
-    # Lazy imports: evita que la app caiga si 'requests' o google-auth no están instalados.
-    from google.oauth2 import id_token as google_id_token
-    from google.auth.transport import requests as google_requests
-
     # 1) Verificar token de Google usando tu CLIENT_ID como audiencia
     try:
         info = google_id_token.verify_oauth2_token(
@@ -76,7 +80,10 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     # 2) Restringir dominio si se configuró
     if settings.ALLOWED_EMAIL_DOMAIN:
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
-        if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
+        if not (
+            email.endswith(f"@{allowed}")
+            or (allowed == "gmail.com" and email.endswith("@googlemail.com"))
+        ):
             raise HTTPException(status_code=403, detail=f"Solo correos @{allowed}")
 
     # 3) Buscar/crear usuario
