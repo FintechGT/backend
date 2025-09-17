@@ -10,17 +10,15 @@ from app.api.deps import get_current_user
 from app.db.models.user import User
 from app.core.config import settings
 
-# Google ID token verification
+# Verificación de ID token de Google
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-# Para crear usuario dummy si viene por Google
 import secrets
 from passlib.context import CryptContext
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter()
-
 
 @router.post("/register", response_model=UserResponse)
 async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
@@ -38,7 +36,6 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/login")
 async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     user = await AuthService.authenticate_user(data.email, data.password, db)
@@ -48,7 +45,7 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
 
-
+# /auth/google: crea o inicia sesión con Google
 @router.post("/google")
 async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get_db)):
     # 1) Verificar token de Google con audiencia (tu client_id)
@@ -56,12 +53,12 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
         info = google_id_token.verify_oauth2_token(
             payload.id_token,
             google_requests.Request(),
-            settings.GOOGLE_CLIENT_ID,  # audiencia
+            settings.GOOGLE_CLIENT_ID,   # audiencia
         )
     except Exception:
         raise HTTPException(status_code=401, detail="Token de Google inválido")
 
-    # (redundante, pero mantenemos la validación del issuer)
+    # (extra) validar issuer
     if info.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
         raise HTTPException(status_code=401, detail="Issuer inválido")
 
@@ -71,7 +68,7 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     email = str(info.get("email", "")).lower()
     nombre = (info.get("name") or info.get("given_name") or email.split("@")[0])[:30]
 
-    # 2) Restringir dominio si lo definiste (p. ej. gmail.com)
+    # 2) Restringir dominio si está configurado (p. ej. gmail.com)
     if settings.ALLOWED_EMAIL_DOMAIN:
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
@@ -96,7 +93,6 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     # 4) Emitir JWT
     access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
-
 
 @router.get("/me")
 async def read_profile(current_user: User = Depends(get_current_user)):
