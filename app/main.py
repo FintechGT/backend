@@ -48,3 +48,7 @@ app.include_router(solicitudes.router, prefix="/solicitudes", tags=["solicitudes
 @app.get("/")
 def root():
     return {"ok": True, "name": "API Pignoraticios"}
+
+
+from app.api.routers import usuarios
+app.include_router(usuarios.router)
