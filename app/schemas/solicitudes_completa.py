@@ -1,9 +1,11 @@
-from pydantic import BaseModel, HttpUrl, conint, condecimal, field_validator
 from typing import List, Optional
+from pydantic import BaseModel, HttpUrl, conint, condecimal, field_validator
 
+# ---------- IN ----------
 class FotoIn(BaseModel):
     url: HttpUrl
     orden: conint(ge=1)
+
 
 class ArticuloIn(BaseModel):
     id_tipo: conint(ge=1)
@@ -11,6 +13,7 @@ class ArticuloIn(BaseModel):
     valor_estimado: condecimal(ge=0, max_digits=12, decimal_places=2)
     condicion: Optional[str] = None
     fotos: List[FotoIn] = []
+
 
 class SolicitudCompletaIn(BaseModel):
     metodo_entrega: str
@@ -24,10 +27,13 @@ class SolicitudCompletaIn(BaseModel):
             raise ValueError("Debe enviar al menos 1 artículo.")
         return v
 
+
+# ---------- OUT ----------
 class FotoOut(BaseModel):
     id_foto: int
     url: str
     orden: int
+
 
 class ArticuloOut(BaseModel):
     id_articulo: int
@@ -37,9 +43,20 @@ class ArticuloOut(BaseModel):
     condicion: Optional[str] = None
     fotos: List[FotoOut] = []
 
+
 class SolicitudCompletaOut(BaseModel):
     id_solicitud: int
     estado: str
     metodo_entrega: str
     direccion_entrega: Optional[str] = None
     articulos: List[ArticuloOut]
+
+
+# ---------- OUT (lista resumida) ----------
+class SolicitudResumenOut(BaseModel):
+    id_solicitud: int
+    estado: str
+    metodo_entrega: str
+    direccion_entrega: Optional[str] = None
+    # ISO "YYYY-MM-DD HH:MM:SS"
+    fecha_envio: str
