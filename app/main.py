@@ -1,16 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.api.routers import health, auth, solicitudes
+from fastapi.routing import APIRoute
+from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.core.config import settings
-
+from app.api.routers.health import router as health_router
+from app.api.routers.auth import router as auth_router
+from app.api.routers.solicitudes import router as solicitudes_router
+from app.api.routers.cloudinary_sign import router as cloudinary_router 
+from app.db import models  # noqa: F401  <-- esto ejecuta app/db/models/__init__.py
 
 def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
     origins = [o.strip() for o in raw.split(",") if o.strip()]
     return [o for o in origins if o != "*"]
-
 
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 fallback = [
@@ -40,10 +43,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router,      prefix="/health",      tags=["health"])
-app.include_router(auth.router,        prefix="/auth",        tags=["auth"])
-app.include_router(solicitudes.router, prefix="/solicitudes", tags=["solicitudes"])
 
+app.include_router(health_router,      prefix="/health",      tags=["health"])
+app.include_router(auth_router,        prefix="/auth",        tags=["auth"])
+app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
+app.include_router(cloudinary_router)  
+app.include_router(solicitudes_completa_router)
+
+
+
+
+_diag = APIRouter()
+@_diag.get("/cloudinary/ping-local")
+def cloud_ping_local():
+    return {"ok": True}
+app.include_router(_diag)
+
+print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
 
 @app.get("/")
 def root():
