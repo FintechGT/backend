@@ -3,8 +3,6 @@ from app.db.database import Base
 
 class Articulo(Base):
     __tablename__ = "Articulo"
-
-<<<<<<< HEAD
     id_articulo  = Column("Id_articulo", Integer, primary_key=True, autoincrement=True)
     id_solicitud = Column("Id_Solicitud", Integer, ForeignKey("Solicitud.Id_Solicitud"), nullable=False)
     id_tipo      = Column("ID_tipo", Integer, ForeignKey("Cat_Tipo_Articulo.IdTipo"), nullable=False)
@@ -14,7 +12,6 @@ class Articulo(Base):
     valor_estimado  = Column("Valor_Estimado", DECIMAL(12, 2), nullable=False, default=0.00)
     valor_aprobado  = Column("Valor_Aprobado", DECIMAL(12, 2), nullable=True)
     condicion       = Column("Condicion", String(120), nullable=True)
-=======
     id_articulo = Column("Id_articulo", Integer, primary_key=True, autoincrement=True)
     id_solicitud = Column("Id_Solicitud", Integer, ForeignKey("Solicitud.Id_Solicitud"), nullable=False)
     id_tipo = Column("ID_tipo", Integer, ForeignKey("Cat_Tipo_Articulo.IdTipo"), nullable=False)
@@ -23,4 +20,3 @@ class Articulo(Base):
     valor_estimado = Column("Valor_Estimado", DECIMAL(12, 2), nullable=False, default=0.00)
     valor_aprobado = Column("Valor_Aprobado", DECIMAL(12, 2), nullable=True)
     condicion = Column("Condicion", String(120), nullable=True)
->>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
