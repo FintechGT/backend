@@ -5,6 +5,11 @@ from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
 import logging
 import traceback
+from app.api.routers import health
+from app.api.routers import auth
+from app.api.routers import solicitudes
+app = FastAPI(title="API Pignoraticios")
+
 
 from app.core.config import settings
 from app.db import models  # Importa todos los modelos para que SQLAlchemy los registre
@@ -56,6 +61,7 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
+
 
 # Middleware CORS
 app.add_middleware(
@@ -298,3 +304,6 @@ if __name__ == "__main__":
             methods = ", ".join(route.methods)
             print(f"   {methods:20} {route.path}")
     print(f"\n📊 Total de endpoints: {len([r for r in app.routes if isinstance(r, APIRoute)])}")
+app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(solicitudes.router)

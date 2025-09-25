@@ -27,7 +27,7 @@ async def registrar_auditoria(
     modulo: str,
     detalle: str,
     valores_anteriores: dict | object | None = None,
-    valores_nuevos: dict | object | None = None,
+    valores_nuevos: dict | object | None = None
 ) -> None:
     old_values = _to_plain_dict(valores_anteriores) if valores_anteriores is not None else None
     new_values = _to_plain_dict(valores_nuevos) if valores_nuevos is not None else None

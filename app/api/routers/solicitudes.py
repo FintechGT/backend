@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+<<<<<<< HEAD
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -18,16 +19,50 @@ router = APIRouter(tags=["Solicitudes"])
 def _cols_dict(obj):
     m = inspect(obj)
     return {c.key: getattr(obj, c.key) for c in m.mapper.column_attrs}
+=======
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.db.database import get_db
+from app.db.models.solicitud import Solicitud
+from app.db.models.estado_solicitud import EstadoSolicitud
+from app.utils.auditoria import registrar_auditoria
+from app.core.security import get_current_user
+from sqlalchemy.orm import selectinload
+
+router = APIRouter(prefix="/solicitudes", tags=["Solicitudes"])
+
+class SolicitudCreate(BaseModel):
+    metodo_entrega: str = Field(..., description="domicilio | oficina")
+    direccion_entrega: str | None = Field(None, max_length=300)
+
+class SolicitudOut(BaseModel):
+    id_solicitud: int
+    estado: str
+    metodo_entrega: str
+    direccion_entrega: str | None
+
+    class Config:
+        from_attributes = True
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
 
 @router.post("", response_model=SolicitudOut, status_code=status.HTTP_201_CREATED)
 async def crear_solicitud(
     payload: SolicitudCreate,
     db: AsyncSession = Depends(get_db),
+<<<<<<< HEAD
     current_user: User = Depends(get_current_user),
+=======
+    current_user=Depends(get_current_user),
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
 ):
     metodo = payload.metodo_entrega.lower()
     if metodo not in {"domicilio", "oficina"}:
         raise HTTPException(status_code=400, detail="Método de entrega inválido (domicilio | oficina)")
+<<<<<<< HEAD
+=======
+
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
     if metodo == "domicilio" and not payload.direccion_entrega:
         raise HTTPException(status_code=400, detail="Debe proporcionar una dirección si el método es domicilio")
 
@@ -40,18 +75,34 @@ async def crear_solicitud(
         id_usuario=current_user.ID_Usuario,
         id_estado=estado.Id_Estado_Solicitud,
         metodo_entrega=metodo,
+<<<<<<< HEAD
         direccion_entrega=payload.direccion_entrega,
     )
     db.add(nueva)
     await db.flush()
+=======
+        direccion_entrega=payload.direccion_entrega
+    )
+
+    db.add(nueva)
+    await db.flush()
+
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
     await registrar_auditoria(
         db=db,
         usuario_id=current_user.ID_Usuario,
         accion="CREAR_SOLICITUD",
         modulo="Solicitud",
+<<<<<<< HEAD
         detalle=f"Solicitud {nueva.id_solicitud} creada",
         valores_nuevos=nueva,
     )
+=======
+        detalle=f"Solicitud ID {nueva.id_solicitud} creada por usuario {current_user.ID_Usuario}",
+        valores_nuevos=nueva.__dict__,
+    )
+
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
     await db.commit()
     await db.refresh(nueva)
 
@@ -59,13 +110,21 @@ async def crear_solicitud(
         id_solicitud=nueva.id_solicitud,
         estado=estado.Nombre,
         metodo_entrega=nueva.metodo_entrega,
+<<<<<<< HEAD
         direccion_entrega=nueva.direccion_entrega,
+=======
+        direccion_entrega=nueva.direccion_entrega
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
     )
 
 @router.get("/mis", response_model=list[SolicitudOut])
 async def listar_mis_solicitudes(
     db: AsyncSession = Depends(get_db),
+<<<<<<< HEAD
     current_user: User = Depends(get_current_user),
+=======
+    current_user=Depends(get_current_user),
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
 ):
     result = await db.execute(
         select(Solicitud)
@@ -78,6 +137,7 @@ async def listar_mis_solicitudes(
             id_solicitud=s.id_solicitud,
             estado=s.estado.Nombre if s.estado else "",
             metodo_entrega=s.metodo_entrega,
+<<<<<<< HEAD
             direccion_entrega=s.direccion_entrega,
         )
         for s in solicitudes
@@ -216,3 +276,8 @@ async def cambiar_estado(
         metodo_entrega=s.metodo_entrega,
         direccion_entrega=s.direccion_entrega,
     )
+=======
+            direccion_entrega=s.direccion_entrega
+        ) for s in solicitudes
+    ]
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c

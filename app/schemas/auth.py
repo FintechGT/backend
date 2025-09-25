@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     id: int = Field(..., alias="ID_Usuario")
     username: str = Field(..., alias="Nombre")
     email: EmailStr = Field(..., alias="Correo")
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

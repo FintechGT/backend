@@ -53,7 +53,13 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
 async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     user = await AuthService.authenticate_user(data.email, data.password, db)
     if not user:
+<<<<<<< HEAD
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
+=======
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+  
+>>>>>>> ee46423f7b0accf1469a92eadcc777cd896d299c
     access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
 
