@@ -1,32 +1,36 @@
 # app/services/auth_service.py
-from typing import Optional
-
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from passlib.context import CryptContext
-
+from sqlalchemy import select, func
 from app.db.models.user import User
 from app.schemas.auth import UserRegister
+from passlib.context import CryptContext
 
-# Config de hashing (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+MAX_BCRYPT_LEN = 72  
 
 class AuthService:
     @staticmethod
     async def register_user(data: UserRegister, db: AsyncSession) -> User:
-        """Crea un usuario con contraseña (registro normal)."""
-        # ¿Existe ya el correo?
-        exists = await db.execute(select(User).where(User.Correo == data.email))
+        email = data.email.strip().lower()
+        username = data.username.strip()
+
+        if len(data.password.encode("utf-8")) > MAX_BCRYPT_LEN:
+            raise ValueError("La contraseña no puede superar 72 bytes.")
+
+        exists = await db.execute(
+            select(User).where(func.lower(User.Correo) == email)
+        )
         if exists.scalar_one_or_none():
             raise ValueError("El correo ya está en uso")
 
         hashed_password = pwd_context.hash(data.password)
-
         new_user = User(
-            Nombre=data.username,
-            Correo=data.email.lower().strip(),
+            Nombre=username,
+            Correo=email,
             Contrasena_hash=hashed_password,
+            Verificado=True,      
+            Estado_Activo=True,    
         )
         db.add(new_user)
         await db.commit()
@@ -34,27 +38,27 @@ class AuthService:
         return new_user
 
     @staticmethod
-    async def authenticate_user(
-        email: str, password: str, db: AsyncSession
-    ) -> Optional[User]:
-        """
-        Devuelve el usuario si la contraseña es válida.
-        No levanta excepciones por hash inválido/ausente (cuentas creadas por Google).
-        """
-        result = await db.execute(select(User).where(User.Correo == email.lower().strip()))
+    async def authenticate_user(email: str, password: str, db: AsyncSession) -> User | None:
+        # normalizar
+        email = (email or "").strip().lower()
+
+        result = await db.execute(
+            select(User).where(func.lower(User.Correo) == email)
+        )
         user = result.scalar_one_or_none()
         if not user:
             return None
 
-        # Si la cuenta fue creada por Google puede no tener hash real
-        hashed = getattr(user, "Contrasena_hash", None)
-        if not hashed:
-            return None
-
+        stored_hash = getattr(user, "Contrasena_hash", None) or ""
         try:
-            ok = pwd_context.verify(password, hashed)
+            ok = pwd_context.verify(password, stored_hash)
         except Exception:
-            # Hash malformado/algoritmo distinto → tratar como credenciales inválidas
+            ok = False
+
+        if not ok:
             return None
 
-        return user if ok else None
+        # chequeos opcionales
+        if hasattr(user, "Estado_Activo") and user.Estado_Activo is False:
+            return None
+        return user
