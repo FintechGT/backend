@@ -1,4 +1,3 @@
-# app/api/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -19,7 +18,7 @@ from google.auth.transport import requests as google_requests
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Este router publica /auth/...
+# Publica /auth/...
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -29,11 +28,11 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if getattr(settings, "AUTH_GOOGLE_ONLY", False):
         raise HTTPException(status_code=400, detail="El registro es solo con Google")
 
-    # Normalización de correo
-    email = data.email.strip().lower()
+    # Normalización y validaciones de correo
+    email = (data.email or "").strip().lower()
     domain = email.split("@")[-1] if "@" in email else ""
 
-    # Restringir dominio si se configuró
+    # Dominio permitido (opcional)
     if getattr(settings, "ALLOWED_EMAIL_DOMAIN", ""):
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
@@ -45,12 +44,14 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if not has_mx_records(domain):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dominio de correo inválido (sin registros MX)")
 
-    # Crear usuario (AuthService valida longitud de bcrypt, duplicados, etc.)
+    # Crear usuario (AuthService valida longitud bcrypt, duplicados, etc.)
     try:
-        user = await AuthService.register_user(
-            UserRegister(username=data.username, email=email, password=data.password),
-            db,
+        normalized = UserRegister(
+            username=data.username.strip(),
+            email=email,
+            password=data.password,
         )
+        user = await AuthService.register_user(normalized, db)
         return user
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -68,7 +69,7 @@ async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
 @router.post("/google")
 async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get_db)):
-    # Verificar id_token contra Google
+    # Verificar id_token con Google
     try:
         info = google_id_token.verify_oauth2_token(
             payload.id_token,
@@ -87,17 +88,17 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
     email = str(info.get("email", "")).lower()
     nombre = (info.get("name") or info.get("given_name") or email.split("@")[0])[:30]
 
-    # Restringir dominio si aplica
+    # Dominio permitido (opcional)
     if getattr(settings, "ALLOWED_EMAIL_DOMAIN", ""):
         allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Solo correos @{allowed}")
 
-    # Buscar usuario por correo (case-insensitive)
+    # Buscar usuario case-insensitive
     result = await db.execute(select(User).where(func.lower(User.Correo) == email))
     user = result.scalar_one_or_none()
 
-    # Si no existe, crearlo con un hash “dummy”
+    # Si no existe, crearlo con hash "dummy"
     if user is None:
         dummy = pwd_context.hash(secrets.token_urlsafe(16))
         user = User(
@@ -117,7 +118,7 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
 
 @router.get("/me")
 async def read_profile(current_user: User = Depends(get_current_user)):
-    # Llaves compatibles con tu frontend (lo mapeas a camelCase)
+    # Llaves que tu frontend ya mapea a camelCase
     return {
         "ID_Usuario": current_user.ID_Usuario,
         "Nombre": current_user.Nombre,
