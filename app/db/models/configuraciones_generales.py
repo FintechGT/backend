@@ -1,8 +1,8 @@
 from sqlalchemy import Column, Integer, String, TIMESTAMP
 from app.db.database import Base
 
-class ConfiguracionesGenerales(Base):
-    __tablename__ = "Configuraciones_Generales"
+class ConfiguracionGeneral(Base):
+    __tablename__ = "configuraciones_generales"
 
     id_config = Column("Id_Config", Integer, primary_key=True, autoincrement=True)
     clave = Column("Clave", String(50), nullable=False, unique=True)

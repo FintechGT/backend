@@ -1,0 +1,1 @@
+from .configuraciones_generales import configuracion_general
