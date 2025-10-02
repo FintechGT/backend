@@ -13,6 +13,6 @@ passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
 email-validator==2.1.1
 
+# Google Auth + transporte HTTP
 google-auth>=2.23.0
 requests==2.32.3
-dnspython==2.8.0
