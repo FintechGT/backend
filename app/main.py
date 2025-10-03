@@ -11,6 +11,7 @@ from app.api.routers.auth import router as auth_router
 from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
+from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
 
 def parse_origins(raw: str | None) -> list[str]:
     if not raw:
@@ -55,6 +56,7 @@ app.include_router(auth_router)
 app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
 app.include_router(cloudinary_router)
 app.include_router(solicitudes_completa_router)
+app.include_router(articulo_rechazar_router)
 
 try:
     from app.api.routers import usuarios as usuarios_router_module
