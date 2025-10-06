@@ -73,3 +73,4 @@ def root():
     return {"ok": True, "name": "API Pignoraticios"}
 
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+
