@@ -11,6 +11,7 @@ from app.api.routers.auth import router as auth_router
 from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
+from app.api.routers.modulos import router as modulos_router  # 👈 NUEVO
 
 def parse_origins(raw: str | None) -> list[str]:
     if not raw:
@@ -56,6 +57,9 @@ app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes
 app.include_router(cloudinary_router)
 app.include_router(solicitudes_completa_router)
 
+# 👇 agrega el router de módulos
+app.include_router(modulos_router)  # 👈 NUEVO
+
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
@@ -73,3 +77,22 @@ def root():
     return {"ok": True, "name": "API Pignoraticios"}
 
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+
+
+
+
+
+from app.api.routers.permisos import router as permisos_router
+from app.api.routers.roles import router as roles_router  
+
+app.include_router(permisos_router)
+app.include_router(roles_router)  
+
+
+
+from app.api.routers.roles_permisos import router as roles_permisos_router
+app.include_router(roles_permisos_router)
+
+
+from app.api.routers.usuario_roles import router as usuario_roles_router
+app.include_router(usuario_roles_router)  
