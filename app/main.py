@@ -12,9 +12,7 @@ from app.api.routers.auth import router as auth_router
 from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
-from app.api.routers.catalogos import router as catalogos_router
 from app.api.routers.recepciones import router as recepciones_router
-
 
 def parse_origins(raw: str | None) -> list[str]:
     if not raw:
@@ -54,8 +52,7 @@ app.include_router(auth_router)
 app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
 app.include_router(cloudinary_router)
 app.include_router(solicitudes_completa_router)
-app.include_router(catalogos_router)      # ← catálogos
-app.include_router(recepciones_router)    # ← recepciones
+app.include_router(recepciones_router)
 
 # Usuarios (si existe)
 try:
@@ -66,11 +63,9 @@ except Exception:
 
 # Diagnóstico simple
 _diag = APIRouter()
-
 @_diag.get("/cloudinary/ping-local")
 def cloud_ping_local():
     return {"ok": True}
-
 app.include_router(_diag)
 
 @app.get("/")
@@ -78,3 +73,4 @@ def root():
     return {"ok": True, "name": "API Pignoraticios"}
 
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+
