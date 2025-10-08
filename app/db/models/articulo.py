@@ -13,4 +13,3 @@ class Articulo(Base):
     valor_estimado  = Column("Valor_Estimado", DECIMAL(12, 2), nullable=False, default=0.00)
     valor_aprobado  = Column("Valor_Aprobado", DECIMAL(12, 2), nullable=True)
     condicion       = Column("Condicion", String(120), nullable=True)
-    motivo_rechazo  = Column("Motivo_Rechazo", String(255), nullable=True)
