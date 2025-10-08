@@ -4,21 +4,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
 from app.core.config import settings
-from app.db import models  # noqa: F401
+from app.db import models  # noqa
 
+# Routers base
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
-from app.api.routers.modulos import router as modulos_router  # 👈 NUEVO
+from app.api.routers.recepciones import router as recepciones_router
+
+# Módulo-permiso (nuevos)
+from app.api.routers.modulos import router as modulos_router
+from app.api.routers.permisos import router as permisos_router
+from app.api.routers.roles import router as roles_router
+from app.api.routers.roles_permisos import router as roles_permisos_router
+from app.api.routers.usuario_roles import router as usuario_roles_router
+
 
 def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
-    origins = [o.strip() for o in raw.split(",") if o.strip()]
-    return [o for o in origins if o != "*"]
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
+# Lista blanca CORS (SIN allow_origin_regex)
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 fallback = [
     "http://localhost:3000",
@@ -29,8 +38,6 @@ for o in fallback:
     if o not in origins:
         origins.append(o)
 
-allow_origin_regex = r"https://.*\.vercel\.app"
-
 app = FastAPI(
     title="API Pignoraticios",
     root_path=getattr(settings, "ROOT_PATH", ""),
@@ -38,38 +45,44 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# 👉 El middleware SIEMPRE antes de registrar routers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# health con prefix explícito
+# Routers
 app.include_router(health_router, prefix="/health", tags=["health"])
-
-# OJO: auth_router YA tiene prefix="/auth" dentro de auth.py
 app.include_router(auth_router)
-
 app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
 app.include_router(cloudinary_router)
 app.include_router(solicitudes_completa_router)
+app.include_router(recepciones_router)
 
-# 👇 agrega el router de módulos
-app.include_router(modulos_router)  # 👈 NUEVO
+# Seguridad: módulos/roles/permisos
+app.include_router(modulos_router)
+app.include_router(permisos_router)
+app.include_router(roles_router)
+app.include_router(roles_permisos_router)
+app.include_router(usuario_roles_router)
 
+# Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
 except Exception:
     pass
 
+# Diagnóstico simple
 _diag = APIRouter()
+
 @_diag.get("/cloudinary/ping-local")
 def cloud_ping_local():
     return {"ok": True}
+
 app.include_router(_diag)
 
 @app.get("/")
@@ -77,22 +90,3 @@ def root():
     return {"ok": True, "name": "API Pignoraticios"}
 
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
-
-
-
-
-
-from app.api.routers.permisos import router as permisos_router
-from app.api.routers.roles import router as roles_router  
-
-app.include_router(permisos_router)
-app.include_router(roles_router)  
-
-
-
-from app.api.routers.roles_permisos import router as roles_permisos_router
-app.include_router(roles_permisos_router)
-
-
-from app.api.routers.usuario_roles import router as usuario_roles_router
-app.include_router(usuario_roles_router)  
