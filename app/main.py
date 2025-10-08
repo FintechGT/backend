@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
@@ -6,14 +5,27 @@ from fastapi.routing import APIRoute
 from app.core.config import settings
 from app.db import models  # noqa
 
-# Routers
+# Routers base
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
-from app.api.routers.catalogos import router as catalogos_router
 from app.api.routers.recepciones import router as recepciones_router
+from app.api.routers.catalogos import router as catalogos_router  # ← agregado
+
+# Nuevo: Rechazar Artículo
+from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
+
+# Nuevo: Valuador (agregado desde feature/api_valuador)
+from app.api.routers.articulos_valuador import router as articulos_valuador_router
+
+# Módulo-permiso (nuevos)
+from app.api.routers.modulos import router as modulos_router
+from app.api.routers.permisos import router as permisos_router
+from app.api.routers.roles import router as roles_router
+from app.api.routers.roles_permisos import router as roles_permisos_router
+from app.api.routers.usuario_roles import router as usuario_roles_router
 
 
 def parse_origins(raw: str | None) -> list[str]:
@@ -54,10 +66,23 @@ app.include_router(auth_router)
 app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
 app.include_router(cloudinary_router)
 app.include_router(solicitudes_completa_router)
-app.include_router(catalogos_router)      # ← catálogos
-app.include_router(recepciones_router)    # ← recepciones
+app.include_router(recepciones_router)
+app.include_router(catalogos_router)      # ← registrar catálogos
 
-# Usuarios (si existe)
+# Seguridad: módulos/roles/permisos
+app.include_router(modulos_router)
+app.include_router(permisos_router)
+app.include_router(roles_router)
+app.include_router(roles_permisos_router)
+app.include_router(usuario_roles_router)
+
+# Valuador
+app.include_router(articulos_valuador_router)
+
+# Rechazar Artículo (ruta: PATCH /articulo/rechazar/{id_articulo}/rechazar)
+app.include_router(articulo_rechazar_router)
+
+# Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
