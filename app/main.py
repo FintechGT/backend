@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
@@ -13,6 +12,9 @@ from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
+
+# Nuevo: Rechazar Artículo
+from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
 
 # Nuevo: Valuador (agregado desde feature/api_valuador)
 from app.api.routers.articulos_valuador import router as articulos_valuador_router
@@ -74,6 +76,9 @@ app.include_router(usuario_roles_router)
 
 # Valuador
 app.include_router(articulos_valuador_router)
+
+# Rechazar Artículo (ruta: PATCH /articulo/rechazar/{id_articulo}/rechazar)
+app.include_router(articulo_rechazar_router)
 
 # Usuarios (si existe el router)
 try:
