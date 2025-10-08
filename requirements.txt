@@ -2,7 +2,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 
 SQLAlchemy==2.0.35
-aiomysql==0.2.0
+asyncmy==0.2.9
 pymysql==1.1.1
 
 pydantic==2.9.1
@@ -13,7 +13,6 @@ passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
 email-validator==2.1.1
 
-# Google Auth + transporte HTTP
 google-auth>=2.23.0
 requests==2.32.3
 dnspython==2.8.0
