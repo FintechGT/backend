@@ -12,6 +12,7 @@ from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
+from app.api.routers.catalogos import router as catalogos_router  # ← agregado
 
 # Nuevo: Rechazar Artículo
 from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
@@ -66,6 +67,7 @@ app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes
 app.include_router(cloudinary_router)
 app.include_router(solicitudes_completa_router)
 app.include_router(recepciones_router)
+app.include_router(catalogos_router)      # ← registrar catálogos
 
 # Seguridad: módulos/roles/permisos
 app.include_router(modulos_router)
