@@ -14,6 +14,9 @@ from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
 
+# Nuevo: Valuador (agregado desde feature/api_valuador)
+from app.api.routers.articulos_valuador import router as articulos_valuador_router
+
 # Módulo-permiso (nuevos)
 from app.api.routers.modulos import router as modulos_router
 from app.api.routers.permisos import router as permisos_router
@@ -68,6 +71,9 @@ app.include_router(permisos_router)
 app.include_router(roles_router)
 app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
+
+# Valuador
+app.include_router(articulos_valuador_router)
 
 # Usuarios (si existe el router)
 try:
