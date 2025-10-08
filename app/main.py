@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
-
+from app.api.routers.pagos_validar import router as pagos_validar_router
 from app.core.config import settings
 from app.db import models  # noqa
 
@@ -78,7 +78,7 @@ app.include_router(usuario_roles_router)
 
 # Valuador
 app.include_router(articulos_valuador_router)
-
+app.include_router(pagos_validar_router)
 # Rechazar Artículo (ruta: PATCH /articulo/rechazar/{id_articulo}/rechazar)
 app.include_router(articulo_rechazar_router)
 
