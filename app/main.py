@@ -13,7 +13,7 @@ from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router  # ← agregado
-
+from app.api.routers.pagos import router as pagos_list_router
 # Nuevo: Rechazar Artículo
 from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
 
@@ -81,7 +81,7 @@ app.include_router(articulos_valuador_router)
 app.include_router(pagos_validar_router)
 # Rechazar Artículo (ruta: PATCH /articulo/rechazar/{id_articulo}/rechazar)
 app.include_router(articulo_rechazar_router)
-
+app.include_router(pagos_list_router)
 app.include_router(solicitudes_articulos.router)
 # Usuarios (si existe el router)
 try:
