@@ -1,10 +1,11 @@
+# app/main.py
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
-from app.api.routers.pagos_validar import router as pagos_validar_router
+
 from app.core.config import settings
 from app.db import models  # noqa
-from app.api.routers import solicitudes_articulos
+
 # Routers base
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
@@ -12,20 +13,25 @@ from app.api.routers.solicitudes import router as solicitudes_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
-from app.api.routers.catalogos import router as catalogos_router  # ← agregado
-from app.api.routers.pagos import router as pagos_list_router
-# Nuevo: Rechazar Artículo
-from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
+from app.api.routers.catalogos import router as catalogos_router
 
-# Nuevo: Valuador (agregado desde feature/api_valuador)
+# Solicitudes + artículos (agregar/obtener fotos y artículos)
+from app.api.routers import solicitudes_articulos
+
+# Valuador / pagos
 from app.api.routers.articulos_valuador import router as articulos_valuador_router
+from app.api.routers.pagos_validar import router as pagos_validar_router
+from app.api.routers.pagos import router as pagos_list_router  # ← LISTAR PAGOS
 
-# Módulo-permiso (nuevos)
+# Seguridad: módulos/roles/permisos
 from app.api.routers.modulos import router as modulos_router
 from app.api.routers.permisos import router as permisos_router
 from app.api.routers.roles import router as roles_router
 from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
+
+# Artículos: rechazo
+from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
 
 
 def parse_origins(raw: str | None) -> list[str]:
@@ -33,7 +39,8 @@ def parse_origins(raw: str | None) -> list[str]:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
 
-# Lista blanca CORS (SIN allow_origin_regex)
+
+# Lista blanca CORS
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 fallback = [
     "http://localhost:3000",
@@ -51,7 +58,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# 👉 El middleware SIEMPRE antes de registrar routers
+# Middleware CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -60,29 +67,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
+# -----------------------------
+# Registro de Routers
+# -----------------------------
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(auth_router)
-app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
-app.include_router(cloudinary_router)
-app.include_router(solicitudes_completa_router)
-app.include_router(recepciones_router)
-app.include_router(catalogos_router)      # ← registrar catálogos
 
-# Seguridad: módulos/roles/permisos
+# Solicitudes base
+app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
+app.include_router(solicitudes_completa_router)
+app.include_router(solicitudes_articulos.router)
+
+# Utilidades
+app.include_router(cloudinary_router)
+app.include_router(recepciones_router)
+app.include_router(catalogos_router)
+
+# Seguridad
 app.include_router(modulos_router)
 app.include_router(permisos_router)
 app.include_router(roles_router)
 app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
 
-# Valuador
+# Valuador y pagos
 app.include_router(articulos_valuador_router)
-app.include_router(pagos_validar_router)
-# Rechazar Artículo (ruta: PATCH /articulo/rechazar/{id_articulo}/rechazar)
+app.include_router(pagos_validar_router)   # POST /pagos/{id_pago}/validar
+app.include_router(pagos_list_router)      # GET  /prestamos/{id_prestamo}/pagos
+
+# Artículos (rechazo)
 app.include_router(articulo_rechazar_router)
-app.include_router(pagos_list_router)
-app.include_router(solicitudes_articulos.router)
+
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
