@@ -4,7 +4,7 @@ from fastapi.routing import APIRoute
 from app.api.routers.pagos_validar import router as pagos_validar_router
 from app.core.config import settings
 from app.db import models  # noqa
-
+from app.api.routers import solicitudes_articulos
 # Routers base
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
@@ -82,6 +82,7 @@ app.include_router(pagos_validar_router)
 # Rechazar Artículo (ruta: PATCH /articulo/rechazar/{id_articulo}/rechazar)
 app.include_router(articulo_rechazar_router)
 
+app.include_router(solicitudes_articulos.router)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
