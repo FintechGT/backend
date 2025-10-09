@@ -16,23 +16,25 @@ from app.api.routers.solicitudes_completa import router as solicitudes_completa_
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
 
-# Pagos
-from app.api.routers.pagos import router as pagos_list_router
-from app.api.routers.pagos_validar import router as pagos_validar_router
-
-# Artículos
-from app.api.routers.articulos_valuador import router as articulos_valuador_router
-from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
+# Solicitudes + artículos (agregar/obtener fotos y artículos)
 from app.api.routers import solicitudes_articulos  # módulo que expone .router
 
-# Seguridad y control de acceso
+# Valuador / pagos
+from app.api.routers.articulos_valuador import router as articulos_valuador_router
+from app.api.routers.pagos_validar import router as pagos_validar_router
+from app.api.routers.pagos import router as pagos_list_router
+
+# Artículos: rechazo
+from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
+
+# Seguridad: módulos/roles/permisos
 from app.api.routers.modulos import router as modulos_router
 from app.api.routers.permisos import router as permisos_router
 from app.api.routers.roles import router as roles_router
 from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
 
-# Préstamos
+# Préstamos (recálculo)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
 
 
@@ -101,8 +103,8 @@ app.include_router(recepciones_router)
 app.include_router(cloudinary_router)
 
 # Pagos
-app.include_router(pagos_list_router)
-app.include_router(pagos_validar_router)
+app.include_router(pagos_list_router)      # GET  /prestamos/{id_prestamo}/pagos
+app.include_router(pagos_validar_router)   # POST /pagos/{id_pago}/validar
 
 # Artículos (valuación y rechazo)
 app.include_router(articulos_valuador_router)
@@ -118,7 +120,7 @@ app.include_router(usuario_roles_router)
 # Préstamos (recálculo)
 app.include_router(prestamos_recalcular_router)
 
-# Usuarios (se intenta registrar si el router existe)
+# Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
