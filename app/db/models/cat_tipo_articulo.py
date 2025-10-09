@@ -5,4 +5,6 @@ class CatTipoArticulo(Base):
     __tablename__ = "Cat_Tipo_Articulo"
 
     id_tipo = Column("IdTipo", Integer, primary_key=True, autoincrement=True)
-    nombre = Column("Nombre", String(100), nullable=False)
+    nombre = Column("Nombre", String(100), nullable=False, unique=True)
+    descripcion = Column("Descripcion", String(255), nullable=True)
+    #tipo articulo
