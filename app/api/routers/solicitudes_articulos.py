@@ -85,33 +85,35 @@ async def agregar_articulo_a_solicitud(
     if not solicitud:
         raise HTTPException(status_code=404, detail="Solicitud no encontrada")
 
-    # 2) Verificar permisos
+    # 2) Verificar permisos (dueño o ADMIN/OPERADOR)
     es_admin = await usuario_tiene_algun_rol(current_user, db, ["ADMIN", "OPERADOR"])
     if not es_admin and solicitud.id_usuario != user_id:
         raise HTTPException(status_code=403, detail="No tienes permiso para modificar esta solicitud")
 
-    # 3) Validar estado permitido
-    estados_permitidos = ["pendiente", "en_revision"]
-    estado_nombre = solicitud.estado.nombre.lower() if solicitud.estado else ""
+    # 3) Validar estado permitido (pendiente | en_revision)
+    estado_nombre = (solicitud.estado.nombre if solicitud.estado else "").lower()
+    estados_permitidos = {"pendiente", "en_revision"}
     if estado_nombre not in estados_permitidos:
         raise HTTPException(
             status_code=409,
-            detail=f"No se pueden agregar artículos en estado '{estado_nombre}'. Solo en: {', '.join(estados_permitidos)}",
+            detail=f"No se pueden agregar artículos en estado '{estado_nombre}'. Solo en: pendiente, en_revision",
         )
 
     # 4) Validar tipo de artículo
-    result_tipo = await db.execute(select(CatTipoArticulo).where(CatTipoArticulo.id_tipo == payload.id_tipo))
+    result_tipo = await db.execute(
+        select(CatTipoArticulo).where(CatTipoArticulo.id_tipo == payload.id_tipo)
+    )
     tipo_articulo = result_tipo.scalar_one_or_none()
     if not tipo_articulo:
         raise HTTPException(status_code=422, detail=f"Tipo de artículo {payload.id_tipo} no existe")
 
-    # 5) Obtener estado pendiente
+    # 5) Obtener estado 'pendiente' de artículo (case-insensitive)
     result_estado = await db.execute(
         select(EstadoArticulo).where(func.lower(EstadoArticulo.nombre) == "pendiente")
     )
     estado_pendiente = result_estado.scalar_one_or_none()
     if not estado_pendiente:
-        raise HTTPException(status_code=500, detail="Estado 'pendiente' no existe en catálogo")
+        raise HTTPException(status_code=500, detail="Estado de artículo 'pendiente' no existe en catálogo")
 
     # 6) Crear el artículo
     nuevo_articulo = Articulo(
@@ -125,7 +127,7 @@ async def agregar_articulo_a_solicitud(
     db.add(nuevo_articulo)
     await db.flush()
 
-    # 7) Registrar auditoría
+    # 7) Auditoría
     await registrar_auditoria(
         db=db,
         usuario_id=user_id,
@@ -178,7 +180,7 @@ async def listar_articulos_de_solicitud(
     if not solicitud:
         raise HTTPException(status_code=404, detail="Solicitud no encontrada")
 
-    # 2) Verificar permisos
+    # 2) Verificar permisos (dueño o ADMIN/OPERADOR/VALUADOR)
     es_admin = await usuario_tiene_algun_rol(current_user, db, ["ADMIN", "OPERADOR", "VALUADOR"])
     if not es_admin and solicitud.id_usuario != user_id:
         raise HTTPException(status_code=403, detail="No tienes permiso para ver esta solicitud")
@@ -196,7 +198,7 @@ async def listar_articulos_de_solicitud(
             select(EstadoArticulo).where(EstadoArticulo.id_estado_articulo == art.id_estado)
         )
         estado = result_estado.scalar_one_or_none()
-        estado_nombre = estado.nombre if estado else "desconocido"
+        estado_nombre = (estado.nombre if estado else "desconocido")
 
         result_fotos = await db.execute(
             select(ArticuloFoto).where(ArticuloFoto.id_articulo == art.id_articulo).order_by(ArticuloFoto.orden)

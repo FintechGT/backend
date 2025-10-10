@@ -1,6 +1,7 @@
+# app/api/routers/solicitudes.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.inspection import inspect
 
@@ -19,20 +20,38 @@ def _cols_dict(obj):
     m = inspect(obj)
     return {c.key: getattr(obj, c.key) for c in m.mapper.column_attrs}
 
+# -----------------
+# Helpers de estados
+# -----------------
+ESTADOS_SOLICITUD_VALIDOS = {"pendiente", "en_revision", "evaluada", "rechazada"}
+
+async def _get_estado_solicitud_by_name(db: AsyncSession, nombre: str) -> EstadoSolicitud | None:
+    """Obtiene EstadoSolicitud por nombre (case-insensitive)."""
+    return (
+        await db.execute(
+            select(EstadoSolicitud).where(func.lower(EstadoSolicitud.Nombre) == nombre.lower())
+        )
+    ).scalar_one_or_none()
+
+def _to_std_estado_nombre(estado: EstadoSolicitud | None) -> str:
+    return (estado.Nombre if estado else "" ).lower()
+
+# -----------------
+# CREATE
+# -----------------
 @router.post("", response_model=SolicitudOut, status_code=status.HTTP_201_CREATED)
 async def crear_solicitud(
     payload: SolicitudCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    metodo = payload.metodo_entrega.lower()
+    metodo = (payload.metodo_entrega or "").lower()
     if metodo not in {"domicilio", "oficina"}:
         raise HTTPException(status_code=400, detail="Método de entrega inválido (domicilio | oficina)")
     if metodo == "domicilio" and not payload.direccion_entrega:
         raise HTTPException(status_code=400, detail="Debe proporcionar una dirección si el método es domicilio")
 
-    result = await db.execute(select(EstadoSolicitud).where(EstadoSolicitud.Nombre == "pendiente"))
-    estado = result.scalar_one_or_none()
+    estado = await _get_estado_solicitud_by_name(db, "pendiente")
     if not estado:
         raise HTTPException(status_code=500, detail="Estado 'pendiente' no existe en el catálogo")
 
@@ -44,6 +63,7 @@ async def crear_solicitud(
     )
     db.add(nueva)
     await db.flush()
+
     await registrar_auditoria(
         db=db,
         usuario_id=current_user.ID_Usuario,
@@ -54,14 +74,18 @@ async def crear_solicitud(
     )
     await db.commit()
     await db.refresh(nueva)
+    await db.refresh(estado)
 
     return SolicitudOut(
         id_solicitud=nueva.id_solicitud,
-        estado=estado.Nombre,
+        estado=_to_std_estado_nombre(estado),
         metodo_entrega=nueva.metodo_entrega,
         direccion_entrega=nueva.direccion_entrega,
     )
 
+# -----------------
+# READ (mis)
+# -----------------
 @router.get("/mis", response_model=list[SolicitudOut])
 async def listar_mis_solicitudes(
     db: AsyncSession = Depends(get_db),
@@ -76,13 +100,16 @@ async def listar_mis_solicitudes(
     return [
         SolicitudOut(
             id_solicitud=s.id_solicitud,
-            estado=s.estado.Nombre if s.estado else "",
+            estado=_to_std_estado_nombre(s.estado),
             metodo_entrega=s.metodo_entrega,
             direccion_entrega=s.direccion_entrega,
         )
         for s in solicitudes
     ]
 
+# -----------------
+# READ (detalle)
+# -----------------
 @router.get("/{id_solicitud}", response_model=SolicitudOut)
 async def obtener_solicitud(
     id_solicitud: int,
@@ -97,11 +124,14 @@ async def obtener_solicitud(
         raise HTTPException(status_code=404, detail="Solicitud no encontrada")
     return SolicitudOut(
         id_solicitud=s.id_solicitud,
-        estado=s.estado.Nombre if s.estado else "",
+        estado=_to_std_estado_nombre(s.estado),
         metodo_entrega=s.metodo_entrega,
         direccion_entrega=s.direccion_entrega,
     )
 
+# -----------------
+# UPDATE
+# -----------------
 @router.put("/{id_solicitud}", response_model=SolicitudOut)
 async def actualizar_solicitud(
     id_solicitud: int,
@@ -142,11 +172,14 @@ async def actualizar_solicitud(
 
     return SolicitudOut(
         id_solicitud=s.id_solicitud,
-        estado=s.estado.Nombre if s.estado else "",
+        estado=_to_std_estado_nombre(s.estado),
         metodo_entrega=s.metodo_entrega,
         direccion_entrega=s.direccion_entrega,
     )
 
+# -----------------
+# DELETE
+# -----------------
 @router.delete("/{id_solicitud}", status_code=status.HTTP_204_NO_CONTENT)
 async def eliminar_solicitud(
     id_solicitud: int,
@@ -173,6 +206,9 @@ async def eliminar_solicitud(
     await db.commit()
     return None
 
+# -----------------
+# PATCH estado (flujo regularizado)
+# -----------------
 @router.patch("/{id_solicitud}/estado/{nuevo}", response_model=SolicitudOut)
 async def cambiar_estado(
     id_solicitud: int,
@@ -180,9 +216,16 @@ async def cambiar_estado(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Permisos (operativos)
     if not await usuario_tiene_algun_rol(current_user, db, ["ADMIN", "OPERADOR", "VALUADOR"]):
         raise HTTPException(status_code=403, detail="Sin permiso")
 
+    # Normalizar y validar destino
+    nuevo_std = (nuevo or "").lower()
+    if nuevo_std not in ESTADOS_SOLICITUD_VALIDOS:
+        raise HTTPException(status_code=400, detail=f"Estado inválido. Válidos: {sorted(ESTADOS_SOLICITUD_VALIDOS)}")
+
+    # Cargar solicitud
     result = await db.execute(
         select(Solicitud).options(selectinload(Solicitud.estado)).where(Solicitud.id_solicitud == id_solicitud)
     )
@@ -190,20 +233,21 @@ async def cambiar_estado(
     if not s:
         raise HTTPException(status_code=404, detail="Solicitud no encontrada")
 
-    res_est = await db.execute(select(EstadoSolicitud).where(EstadoSolicitud.Nombre == nuevo.lower()))
-    est = res_est.scalar_one_or_none()
-    if not est:
-        raise HTTPException(status_code=400, detail="Estado inválido")
+    # Resolver estado destino
+    est_dest = await _get_estado_solicitud_by_name(db, nuevo_std)
+    if not est_dest:
+        raise HTTPException(status_code=400, detail=f"Estado '{nuevo_std}' no existe en catálogo")
 
     old = _cols_dict(s)
-    s.id_estado = est.Id_Estado_Solicitud
+    s.id_estado = est_dest.Id_Estado_Solicitud
     await db.flush()
+
     await registrar_auditoria(
         db=db,
         usuario_id=current_user.ID_Usuario,
         accion="CAMBIAR_ESTADO_SOLICITUD",
         modulo="Solicitud",
-        detalle=f"Solicitud {s.id_solicitud} -> {nuevo}",
+        detalle=f"Solicitud {s.id_solicitud} -> {nuevo_std}",
         valores_anteriores=old,
         valores_nuevos=s,
     )
@@ -212,7 +256,7 @@ async def cambiar_estado(
 
     return SolicitudOut(
         id_solicitud=s.id_solicitud,
-        estado=nuevo.lower(),
+        estado=nuevo_std,
         metodo_entrega=s.metodo_entrega,
         direccion_entrega=s.direccion_entrega,
     )
