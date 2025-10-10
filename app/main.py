@@ -38,6 +38,7 @@ from app.api.routers.usuario_roles import router as usuario_roles_router
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
 
+from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -47,9 +48,10 @@ def parse_origins(raw: str | None) -> list[str]:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
 
-# --------------------------------------------------------------------------------------
-# CORS: lista blanca explícita (sin allow_origin_regex)
-# --------------------------------------------------------------------------------------
+
+
+
+
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 
 # Orígenes de respaldo usados en desarrollo y despliegue
@@ -118,6 +120,7 @@ app.include_router(usuario_roles_router)
 app.include_router(prestamos_recalcular_router)      # individual
 app.include_router(prestamos_recalcular_bulk_router) # bulk
 
+app.include_router(prestamos_evaluar_estado_router)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
