@@ -1,7 +1,8 @@
+# app/api/routers/solicitudes_completa.py
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -105,10 +106,10 @@ async def crear_solicitud_completa(
     if not user_id:
         raise HTTPException(status_code=401, detail="No se pudo resolver el usuario.")
 
-    # 2) Estados 'pendiente'
+    # 2) Estados 'pendiente' (case-insensitive)
     estado_sol = (
         await db.execute(
-            select(EstadoSolicitud).where(EstadoSolicitud.nombre.ilike("pendiente"))
+            select(EstadoSolicitud).where(func.lower(EstadoSolicitud.nombre) == "pendiente")
         )
     ).scalar_one_or_none()
     if not estado_sol:
@@ -116,7 +117,7 @@ async def crear_solicitud_completa(
 
     estado_art = (
         await db.execute(
-            select(EstadoArticulo).where(EstadoArticulo.nombre.ilike("pendiente"))
+            select(EstadoArticulo).where(func.lower(EstadoArticulo.nombre) == "pendiente")
         )
     ).scalar_one_or_none()
     if not estado_art:
@@ -136,7 +137,7 @@ async def crear_solicitud_completa(
             detail=f"Tipos de artículo inexistentes: {sorted(faltantes)}",
         )
 
-    # 4) Crear Solicitud (usar atributo del modelo 'id_estado')
+    # 4) Crear Solicitud
     nueva = Solicitud(
         id_usuario=user_id,
         id_estado=estado_sol.id_estado_solicitud,
@@ -227,12 +228,22 @@ async def actualizar_solicitud_completa(
 
     sol: Solicitud | None = (
         await db.execute(
-            select(Solicitud).where(Solicitud.id_solicitud == id_solicitud)
+            select(Solicitud)
+            .options(selectinload(Solicitud.estado))
+            .where(Solicitud.id_solicitud == id_solicitud)
         )
     ).scalar_one_or_none()
 
     if not sol or sol.id_usuario != user_id:
         raise HTTPException(status_code=404, detail="Solicitud no encontrada.")
+
+    # Bloquear edición si está evaluada o rechazada
+    estado_actual = (sol.estado.nombre if sol.estado else "").lower()
+    if estado_actual in {"evaluada", "rechazada"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No se puede editar una solicitud en estado '{estado_actual}'. Solo 'pendiente' o 'en_revision'."
+        )
 
     # Validar método + dirección
     metodo = payload.metodo_entrega.lower()
@@ -255,7 +266,7 @@ async def actualizar_solicitud_completa(
     # Estado por defecto de artículos
     estado_art = (
         await db.execute(
-            select(EstadoArticulo).where(EstadoArticulo.nombre.ilike("pendiente"))
+            select(EstadoArticulo).where(func.lower(EstadoArticulo.nombre) == "pendiente")
         )
     ).scalar_one_or_none()
     if not estado_art:

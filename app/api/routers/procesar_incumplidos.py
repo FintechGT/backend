@@ -111,10 +111,9 @@ async def _es_estado_inventario(
     id_estado_articulo: int
 ) -> bool:
     """
-    Verifica si el estado del artículo ya corresponde a inventario/venta/vendido.
-    No cambia BD.
+    Verifica si el estado del artículo YA corresponde a inventario/venta/vendido.
+    Evita 'downgrade' de 'en_venta' o 'vendido' a 'en_inventario'.
     """
-    estados_inventario = {"en_inventario", "en_venta", "vendido"}
     res = await db.execute(
         select(EstadoArticulo).where(
             EstadoArticulo.id_estado_articulo == id_estado_articulo
@@ -123,7 +122,7 @@ async def _es_estado_inventario(
     estado = res.scalar_one_or_none()
     if not estado:
         return False
-    return estado.nombre.lower() in estados_inventario
+    return estado.nombre.lower() in {"en_inventario", "en_venta", "vendido"}
 
 
 def _to_decimal_seguro(raw) -> Decimal:
@@ -139,6 +138,20 @@ def _to_decimal_seguro(raw) -> Decimal:
         return Decimal("0.00")
 
 
+def _normalizar_nombre_estado_prestamo(nombre: str) -> str:
+    """
+    Normaliza nombres legados a los nombres oficiales del catálogo.
+    - 'incumplido' → 'incobrable'
+    - 'en_mora'    → 'en_mora_parcial'
+    """
+    n = (nombre or "").strip().lower()
+    if n == "incumplido":
+        return "incobrable"
+    if n == "en_mora":
+        return "en_mora_parcial"
+    return n
+
+
 # ============================================================
 # ENDPOINT PRINCIPAL
 # ============================================================
@@ -146,15 +159,15 @@ def _to_decimal_seguro(raw) -> Decimal:
     "/procesar-incumplidos",
     response_model=ProcesarIncumplidosOut,
     status_code=status.HTTP_200_OK,
-    summary="Procesar préstamos en incumplimiento definitivo (masivo)",
+    summary="Procesar préstamos incobrables y trasladar artículos al inventario (masivo)",
     description=(
-        "Detecta todos los préstamos en incumplimiento definitivo según fechas y saldos, "
+        "Detecta todos los préstamos que cumplen condición de incobrables según fechas y saldos, "
         "y traslada automáticamente sus artículos al inventario. "
         "\n\n**Proceso:**\n"
-        "1. Filtra préstamos en estado 'incumplido' con deuda activa\n"
+        "1. Filtra préstamos en estado 'incobrable' con deuda activa\n"
         "2. Valida que superaron el umbral de días (vencimiento + gracia + umbral)\n"
-        "3. Mueve artículos a estado 'en_inventario'\n"
-        "4. (Opcional) Crea registros en Inventario_Venta\n"
+        "3. Mueve artículos a estado de artículo 'en_inventario'\n"
+        "4. (Opcional) Crea registros en Inventario_Venta con estado 'disponible'\n"
         "5. Registra auditoría completa\n"
         "\n**Idempotente**: ejecutar varias veces el mismo día no duplica inventario."
     )
@@ -165,7 +178,7 @@ async def procesar_prestamos_incumplidos(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Procesa préstamos en incumplimiento definitivo y traslada sus artículos al inventario.
+    Procesa préstamos **incobrables** y traslada sus artículos al inventario.
     No modifica estructura de BD. Solo opera con registros existentes.
     """
     # 1) Verificar permisos
@@ -195,23 +208,29 @@ async def procesar_prestamos_incumplidos(
     )
     dias_totales = dias_gracia + umbral_incumplido_dias
 
-    # 4) Estados requeridos
-    estado_prestamo_incumplido = await _obtener_estado_prestamo(
-        db, payload.estado_prestamo_incumplido
+    # 4) Estados requeridos (prestamo = incobrable; articulo = en_inventario; inventario = disponible)
+    #    Aceptamos el nombre legado 'incumplido' y lo normalizamos a 'incobrable'
+    nombre_estado_prestamo = _normalizar_nombre_estado_prestamo(
+        getattr(payload, "estado_prestamo_incumplido", "incobrable")
     )
-    if not estado_prestamo_incumplido:
+    if nombre_estado_prestamo != "incobrable":
+        # Forzamos el estado objetivo a 'incobrable' para coherencia del flujo
+        nombre_estado_prestamo = "incobrable"
+
+    estado_prestamo_incobrable = await _obtener_estado_prestamo(db, nombre_estado_prestamo)
+    if not estado_prestamo_incobrable:
         raise HTTPException(
             status_code=500,
-            detail=f"Estado de préstamo '{payload.estado_prestamo_incumplido}' no existe"
+            detail=f"Estado de préstamo '{nombre_estado_prestamo}' no existe en catálogo"
         )
 
-    estado_art_inventario = await _obtener_estado_articulo(
-        db, payload.estado_articulo_inventario
-    )
+    # Estado de ARTÍCULO al pasar a inventario
+    nombre_estado_art_objetivo = getattr(payload, "estado_articulo_inventario", "en_inventario")
+    estado_art_inventario = await _obtener_estado_articulo(db, nombre_estado_art_objetivo)
     if not estado_art_inventario:
         raise HTTPException(
             status_code=500,
-            detail=f"Estado de artículo '{payload.estado_articulo_inventario}' no existe"
+            detail=f"Estado de artículo '{nombre_estado_art_objetivo}' no existe en catálogo (debe existir)."
         )
 
     estado_inv_disponible = None
@@ -220,13 +239,13 @@ async def procesar_prestamos_incumplidos(
         if not estado_inv_disponible:
             raise HTTPException(
                 status_code=500,
-                detail="Estado de inventario 'disponible' no existe"
+                detail="Estado de inventario 'disponible' no existe en catálogo"
             )
 
     # 5) Seleccionar préstamos candidatos por estado y deuda
     res = await db.execute(
         select(Prestamo).where(
-            Prestamo.id_estado == estado_prestamo_incumplido.id_estado_prestamo,
+            Prestamo.id_estado == estado_prestamo_incobrable.id_estado_prestamo,
             Prestamo.deuda_actual > 0
         )
     )
@@ -270,14 +289,14 @@ async def procesar_prestamos_incumplidos(
                 ))
                 continue
 
-            # Si ya está en inventario/venta/vendido => omitir (idempotencia)
+            # Si ya está en inventario/venta/vendido => omitir (idempotencia real)
             if await _es_estado_inventario(db, articulo.id_estado):
                 omitidos += 1
                 detalle.append(ProcesarIncumplidosItem(
                     id_prestamo=prestamo.id_prestamo,
                     id_articulo=articulo.id_articulo,
                     accion="omitido",
-                    motivo="Artículo ya está en inventario"
+                    motivo="Artículo ya está en inventario/venta/vendido"
                 ))
                 continue
 
@@ -295,7 +314,7 @@ async def procesar_prestamos_incumplidos(
 
                 if not inv_existente:
                     # valor_aprobado en BD es VARCHAR → convertir seguro a Decimal
-                    precio_base = _to_decimal_seguro(articulo.valor_aprobado)
+                    precio_base = _to_decimal_seguro(getattr(articulo, "valor_aprobado", None))
 
                     nuevo_inventario = InventarioVenta(
                         id_articulo=articulo.id_articulo,
@@ -311,7 +330,7 @@ async def procesar_prestamos_incumplidos(
             await registrar_auditoria(
                 db=db,
                 usuario_id=user_id,
-                accion="ARTICULO_A_INVENTARIO_POR_INCUMPLIDO",
+                accion="ARTICULO_A_INVENTARIO_POR_INCOBRABLE",
                 modulo="Inventario",
                 detalle=(
                     f"Artículo {articulo.id_articulo} movido a inventario. "
@@ -322,8 +341,7 @@ async def procesar_prestamos_incumplidos(
                     "id_articulo": articulo.id_articulo,
                     "id_prestamo": prestamo.id_prestamo,
                     "fecha_ingreso": fecha_corte.isoformat(),
-                    # Si tu tabla Inventario_Venta no tiene 'ubicacion', lo dejamos solo en auditoría:
-                    "ubicacion": payload.ubicacion_default
+                    "ubicacion": getattr(payload, "ubicacion_default", None)
                 }
             )
 
@@ -352,10 +370,10 @@ async def procesar_prestamos_incumplidos(
     await registrar_auditoria(
         db=db,
         usuario_id=user_id,
-        accion="PROCESAR_INCUMPLIDOS_MASIVO",
+        accion="PROCESAR_INCOBRABLES_MASIVO",
         modulo="Prestamo",
         detalle=(
-            f"Procesamiento masivo de incumplidos del {fecha_corte.isoformat()}. "
+            f"Procesamiento masivo de incobrables del {fecha_corte.isoformat()}. "
             f"Candidatos: {total_candidatos}, Trasladados: {trasladados}, "
             f"Omitidos: {omitidos}, Errores: {errores}"
         ),
