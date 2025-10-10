@@ -39,6 +39,8 @@ from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
 
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
+from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
+
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -47,10 +49,6 @@ def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
-
-
-
-
 
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 
@@ -117,10 +115,13 @@ app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
 
 # Préstamos (recálculo)
-app.include_router(prestamos_recalcular_router)      # individual
-app.include_router(prestamos_recalcular_bulk_router) # bulk
+app.include_router(prestamos_recalcular_router)       # individual
+app.include_router(prestamos_recalcular_bulk_router)  # bulk
 
+# Préstamos (evaluación de estado / procesos)
 app.include_router(prestamos_evaluar_estado_router)
+app.include_router(procesar_incumplidos_router)
+
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
