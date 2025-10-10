@@ -5,7 +5,7 @@ from fastapi.routing import APIRoute
 
 # Configuración y modelos base
 from app.core.config import settings
-from app.db import models  # noqa: F401  # Se asegura el registro de modelos para SQLAlchemy
+from app.db import models  # noqa: F401  # asegura el registro de modelos para SQLAlchemy
 
 # Routers base / negocio
 from app.api.routers.health import router as health_router
@@ -36,7 +36,7 @@ from app.api.routers.usuario_roles import router as usuario_roles_router
 
 # Préstamos (recálculo)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
-from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router  # ← NUEVO
+from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
 
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
@@ -47,13 +47,12 @@ def parse_origins(raw: str | None) -> list[str]:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
 
-
 # --------------------------------------------------------------------------------------
 # CORS: lista blanca explícita (sin allow_origin_regex)
 # --------------------------------------------------------------------------------------
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 
-# Se agregan orígenes de respaldo usados en desarrollo y despliegue
+# Orígenes de respaldo usados en desarrollo y despliegue
 fallback = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -62,7 +61,6 @@ fallback = [
 for o in fallback:
     if o not in origins:
         origins.append(o)
-
 
 # --------------------------------------------------------------------------------------
 # Instancia de aplicación
@@ -74,7 +72,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# El middleware CORS debe registrarse antes de incluir cualquier router
+# El middleware CORS debe ir antes de incluir cualquier router
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -82,7 +80,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # --------------------------------------------------------------------------------------
 # Registro de routers (agrupados por dominio funcional)
@@ -118,17 +115,15 @@ app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
 
 # Préstamos (recálculo)
-app.include_router(prestamos_recalcular_router)
-app.include_router(prestamos_recalcular_bulk_router)  # ← NUEVO
+app.include_router(prestamos_recalcular_router)      # individual
+app.include_router(prestamos_recalcular_bulk_router) # bulk
 
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
 except Exception:
-    # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
-    pass
-
+    pass  # ignora si no existe
 
 # --------------------------------------------------------------------------------------
 # Utilidades de diagnóstico
@@ -137,22 +132,18 @@ _diag = APIRouter()
 
 @_diag.get("/cloudinary/ping-local")
 def cloud_ping_local():
-    """Expone un punto de verificación local para validar alcance de router y CORS."""
     return {"ok": True}
 
 app.include_router(_diag)
-
 
 # --------------------------------------------------------------------------------------
 # Raíz de la API
 # --------------------------------------------------------------------------------------
 @app.get("/")
 def root():
-    """Confirma que la API está levantada y devuelve un identificador básico."""
     return {"ok": True, "name": "API Pignoraticios"}
-
 
 # --------------------------------------------------------------------------------------
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
-print("RUTAS REGIS TRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
