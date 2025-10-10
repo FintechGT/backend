@@ -14,5 +14,5 @@ app.add_middleware(
 
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(solicitudes.router)
+app.include_router(solicitudes.router, prefix="/solicitudes", tags=["solicitudes"])
 app.include_router(configuraciones_router, tags=["configuraciones"])
