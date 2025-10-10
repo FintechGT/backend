@@ -36,7 +36,7 @@ from app.api.routers.usuario_roles import router as usuario_roles_router
 
 # Préstamos (recálculo)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
-
+from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router  # ← NUEVO
 
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
@@ -119,6 +119,7 @@ app.include_router(usuario_roles_router)
 
 # Préstamos (recálculo)
 app.include_router(prestamos_recalcular_router)
+app.include_router(prestamos_recalcular_bulk_router)  # ← NUEVO
 
 # Usuarios (si existe el router)
 try:
@@ -154,4 +155,4 @@ def root():
 # --------------------------------------------------------------------------------------
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
-print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+print("RUTAS REGIS TRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
