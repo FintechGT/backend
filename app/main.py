@@ -128,6 +128,10 @@ except Exception:
     # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
     pass
 
+#Crear pagos
+from app.api.routers.crear_pagos import router as crear_pagos_router
+app.include_router(crear_pagos_router)                            
+
 
 # --------------------------------------------------------------------------------------
 # Utilidades de diagnóstico
