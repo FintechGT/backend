@@ -5,8 +5,8 @@ from fastapi.routing import APIRoute
 
 # Configuración y modelos base
 from app.core.config import settings
-from app.db import models  # noqa: F401  # asegura el registro de modelos para SQLAlchemy
-
+from app.db import models  # noqa: F401  # asegura el registro de mo
+from app.api.routers.crear_pagos import router as crear_pagos_router
 # Routers base / negocio
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
@@ -127,6 +127,14 @@ try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
 except Exception:
+
+    # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
+    pass
+
+#Crear pagos
+app.include_router(crear_pagos_router)                            
+
+=======
     pass  # ignora si no existe
 
 # --------------------------------------------------------------------------------------
