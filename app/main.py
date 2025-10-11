@@ -15,6 +15,7 @@ from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
+from app.api.routers.crear_pagos import router as crear_pagos_router  # <-- nuevo
 
 # Solicitudes + artículos (agregar/obtener fotos y artículos)
 from app.api.routers import solicitudes_articulos  # módulo que expone .router
@@ -34,10 +35,9 @@ from app.api.routers.roles import router as roles_router
 from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
 
-# Préstamos (recálculo)
+# Préstamos (recálculo / estado)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
-
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
 
@@ -100,8 +100,9 @@ app.include_router(recepciones_router)
 app.include_router(cloudinary_router)
 
 # Pagos
-app.include_router(pagos_list_router)      # GET  /prestamos/{id_prestamo}/pagos
-app.include_router(pagos_validar_router)   # POST /pagos/{id_pago}/validar
+app.include_router(pagos_list_router)       # GET  /prestamos/{id_prestamo}/pagos
+app.include_router(pagos_validar_router)    # POST /pagos/{id_pago}/validar
+app.include_router(crear_pagos_router)      # POST /pagos (o lo que definas)
 
 # Artículos (valuación y rechazo)
 app.include_router(articulos_valuador_router)
@@ -115,8 +116,8 @@ app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
 
 # Préstamos (recálculo)
-app.include_router(prestamos_recalcular_router)       # individual
-app.include_router(prestamos_recalcular_bulk_router)  # bulk
+app.include_router(prestamos_recalcular_router)        # individual
+app.include_router(prestamos_recalcular_bulk_router)   # bulk
 
 # Préstamos (evaluación de estado / procesos)
 app.include_router(prestamos_evaluar_estado_router)
@@ -127,10 +128,11 @@ try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
 except Exception:
-    pass  # ignora si no existe
+    # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
+    pass
 
 # --------------------------------------------------------------------------------------
-# Utilidades de diagnóstico
+# Utilidades de diagnóstico (opcional)
 # --------------------------------------------------------------------------------------
 _diag = APIRouter()
 
