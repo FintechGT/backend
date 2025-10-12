@@ -42,6 +42,8 @@ from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalc
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
 
+from app.rbac.attach import attach_rbac_guards
+
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -124,7 +126,7 @@ app.include_router(prestamos_recalcular_bulk_router)   # bulk
 # Préstamos (evaluación de estado / procesos)
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
-
+attach_rbac_guards(app)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
