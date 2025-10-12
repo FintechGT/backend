@@ -34,6 +34,7 @@ from app.api.routers.permisos import router as permisos_router
 from app.api.routers.roles import router as roles_router
 from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
+from app.api.routers.usuarios_permisos import router as usuarios_permisos_router
 
 # Préstamos (recálculo / estado)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
@@ -114,6 +115,7 @@ app.include_router(permisos_router)
 app.include_router(roles_router)
 app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
+app.include_router(usuarios_permisos_router)
 
 # Préstamos (recálculo)
 app.include_router(prestamos_recalcular_router)        # individual
