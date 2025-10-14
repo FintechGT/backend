@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
@@ -41,6 +40,10 @@ from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
+
+# Cobranza (nuevos)
+from app.api.routers.rutas_cobranza import router as rutas_cobranza_router
+from app.api.routers.visitas_cobranza import router as visitas_cobranza_router
 
 from app.rbac.attach import attach_rbac_guards
 
@@ -126,6 +129,10 @@ app.include_router(prestamos_recalcular_bulk_router)   # bulk
 # Préstamos (evaluación de estado / procesos)
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
+
+# Cobranza
+app.include_router(rutas_cobranza_router)
+app.include_router(visitas_cobranza_router)
 attach_rbac_guards(app)
 # Usuarios (si existe el router)
 try:

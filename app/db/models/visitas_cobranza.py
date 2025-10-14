@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, DECIMAL, TIMESTAMP, ForeignKey, text
+from sqlalchemy.orm import relationship
 from app.db.database import Base
 
 class VisitasCobranza(Base):
@@ -13,3 +14,7 @@ class VisitasCobranza(Base):
     gps = Column("gps", String(60), nullable=True)
     monto_pagado = Column("Monto_pagado", DECIMAL(12, 2), nullable=True)
     fecha_visita = Column("Fecha_visita", TIMESTAMP, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+
+    # Relaciones
+    ruta = relationship("RutaCobranza", back_populates="visitas")
+    prestamo = relationship("Prestamo")
