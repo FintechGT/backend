@@ -44,6 +44,7 @@ from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_
 
 from app.rbac.attach import attach_rbac_guards
 
+from app.api.routers import inventario_venta 
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -127,7 +128,7 @@ app.include_router(prestamos_recalcular_bulk_router)   # bulk
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
 attach_rbac_guards(app)
-
+app.include_router(inventario_venta.router)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
