@@ -1,103 +1,145 @@
-from typing import Optional, List
-from datetime import datetime
-from pydantic import BaseModel, Field
+from typing import Optional
+from datetime import date
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select, func, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.db.database import get_db
+from app.db.models.solicitud import Solicitud
+from app.db.models.user import User
+from app.db.models.estado_solicitud import EstadoSolicitud
+from app.db.models.articulo import Articulo
+
+from app.schemas.solicitud_filtro_models import SolicitudConDetalleOut, SolicitudListResponse
+from app.db.models.estado_articulo import EstadoArticulo
 
 
-# ========== SCHEMAS ANIDADOS ==========
 
-class UsuarioBasicOut(BaseModel):
-    """Información básica del usuario/cliente"""
-    nombre: str
-    correo: str
-    
-    class Config:
-        from_attributes = True
+router = APIRouter(
+    prefix="/solicitudes-filtros",
+    tags=["Solicitudes - Filtros"]
+)
 
 
-class EstadoSolicitudOut(BaseModel):
-    """Estado de la solicitud"""
-    id: int
-    nombre: str
-    
-    class Config:
-        from_attributes = True
-
-
-# ========== SCHEMA PRINCIPAL DE SOLICITUD ==========
-
-class SolicitudConDetalleOut(BaseModel):
+@router.get("", response_model=SolicitudListResponse)
+async def listar_solicitudes_con_filtros(
+    estado: Optional[str] = Query(None, description="Filtro por nombre de estado (pendiente, evaluada, rechazada)"),
+    usuario_id: Optional[int] = Query(None, description="Filtro por cliente (solo admins)"),
+    metodo_entrega: Optional[str] = Query(None, description="Filtro: 'domicilio' | 'oficina'"),
+    fecha_desde: Optional[date] = Query(None, description="Filtro por fecha_envio >= fecha_desde"),
+    fecha_hasta: Optional[date] = Query(None, description="Filtro por fecha_envio <= fecha_hasta"),
+    limit: int = Query(50, ge=1, le=100, description="Cantidad de resultados por página"),
+    offset: int = Query(0, ge=0, description="Número de resultados a omitir"),
+    sort: str = Query("desc", regex="^(asc|desc)$", description="Ordenamiento por fecha: 'asc' o 'desc'"),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Schema para listar solicitudes con toda la información detallada
-    Incluye: usuario, estado, y contadores de artículos
+    Listar solicitudes con filtros avanzados
     """
-    id_solicitud: int = Field(..., alias="Id_Solicitud")
-    id_usuario: int = Field(..., alias="Id_Usuario")
-    usuario: UsuarioBasicOut
-    estado: EstadoSolicitudOut
-    fecha_envio: datetime = Field(..., alias="Fecha_envio")
-    metodo_entrega: str = Field(..., alias="Metodo_entrega")
-    direccion_entrega: Optional[str] = Field(None, alias="Direccion_entrega")
-    total_articulos: int = Field(..., description="Total de artículos en la solicitud")
-    articulos_pendientes: int = Field(..., description="Artículos aún sin evaluar")
-    articulos_evaluados: int = Field(..., description="Artículos ya evaluados")
     
-    class Config:
-        from_attributes = True
-        populate_by_name = True
-        json_schema_extra = {
-            "example": {
-                "id_solicitud": 2001,
-                "id_usuario": 1001,
-                "usuario": {
-                    "nombre": "Ana Pérez",
-                    "correo": "ana.perez@example.com"
-                },
-                "estado": {
-                    "id": 1,
-                    "nombre": "pendiente"
-                },
-                "fecha_envio": "2025-08-13T10:05:00Z",
-                "metodo_entrega": "domicilio",
-                "direccion_entrega": "6a avenida 10-22, Zona 1",
-                "total_articulos": 2,
-                "articulos_pendientes": 1,
-                "articulos_evaluados": 1
-            }
+    # ========== CONSTRUCCIÓN DE LA QUERY BASE ==========
+    query = (
+        select(Solicitud)
+        .join(EstadoSolicitud, Solicitud.id_estado == EstadoSolicitud.id_estado)
+        .join(User, Solicitud.id_usuario == User.id_usuario)
+        .options(
+            selectinload(Solicitud.estado_solicitud),
+            selectinload(Solicitud.usuario)
+        )
+    )
+    
+    # ========== APLICAR FILTROS ==========
+    condiciones = []
+    
+    if estado:
+        condiciones.append(EstadoSolicitud.nombre.ilike(f"%{estado}%"))
+    
+    if usuario_id:
+        condiciones.append(Solicitud.id_usuario == usuario_id)
+    
+    if metodo_entrega:
+        condiciones.append(Solicitud.metodo_entrega == metodo_entrega)
+    
+    if fecha_desde:
+        condiciones.append(Solicitud.fecha_envio >= fecha_desde)
+    
+    if fecha_hasta:
+        condiciones.append(Solicitud.fecha_envio <= fecha_hasta)
+    
+    if condiciones:
+        query = query.where(and_(*condiciones))
+    
+    # ========== CONTAR TOTAL ==========
+    count_query = select(func.count()).select_from(query.subquery())
+    result_count = await db.execute(count_query)
+    total = result_count.scalar() or 0
+    
+    # ========== ORDENAMIENTO ==========
+    if sort == "desc":
+        query = query.order_by(Solicitud.fecha_envio.desc())
+    else:
+        query = query.order_by(Solicitud.fecha_envio.asc())
+    
+    # ========== PAGINACIÓN ==========
+    query = query.limit(limit).offset(offset)
+    
+    # ========== EJECUTAR QUERY ==========
+    result = await db.execute(query)
+    solicitudes = result.scalars().all()
+    
+    # ========== CONSTRUIR RESPUESTA ==========
+    items_con_detalle = []
+    
+    for solicitud in solicitudes:
+        # Contar artículos por estado
+        query_articulos = (
+            select(
+                func.count().label("total"),
+                func.sum(
+                    func.case(
+                        (EstadoArticulo.nombre.in_(["en evaluacion", "pendiente"]), 1),
+                        else_=0
+                    )
+                ).label("pendientes"),
+                func.sum(
+                    func.case(
+                        (EstadoArticulo.nombre.in_(["evaluado", "aprobado", "rechazado"]), 1),
+                        else_=0
+                    )
+                ).label("evaluados")
+            )
+            .select_from(Articulo)
+            .join(EstadoArticulo, Articulo.id_estado == EstadoArticulo.id_estado)
+            .where(Articulo.id_solicitud == solicitud.id_solicitud)
+        )
+        
+        result_articulos = await db.execute(query_articulos)
+        contadores = result_articulos.first()
+        
+        # Construir objeto de respuesta
+        solicitud_dict = {
+            "id_solicitud": solicitud.id_solicitud,
+            "id_usuario": solicitud.id_usuario,
+            "usuario": {
+                "nombre": solicitud.usuario.nombre if solicitud.usuario else "Desconocido",
+                "correo": solicitud.usuario.correo if solicitud.usuario else ""
+            },
+            "estado": {
+                "id": solicitud.estado_solicitud.id_estado,
+                "nombre": solicitud.estado_solicitud.nombre
+            },
+            "fecha_envio": solicitud.fecha_envio,
+            "metodo_entrega": solicitud.metodo_entrega,
+            "direccion_entrega": solicitud.direccion_entrega,
+            "total_articulos": contadores.total or 0,
+            "articulos_pendientes": contadores.pendientes or 0,
+            "articulos_evaluados": contadores.evaluados or 0
         }
-
-
-# ========== SCHEMA DE RESPUESTA CON PAGINACIÓN ==========
-
-class SolicitudListResponse(BaseModel):
-    """
-    Respuesta paginada de solicitudes
-    """
-    items: List[SolicitudConDetalleOut]
-    total: int = Field(..., description="Total de solicitudes que coinciden con los filtros")
+        
+        items_con_detalle.append(SolicitudConDetalleOut(**solicitud_dict))
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "items": [
-                    {
-                        "id_solicitud": 2001,
-                        "id_usuario": 1001,
-                        "usuario": {
-                            "nombre": "Ana Pérez",
-                            "correo": "ana.perez@example.com"
-                        },
-                        "estado": {
-                            "id": 1,
-                            "nombre": "pendiente"
-                        },
-                        "fecha_envio": "2025-08-13T10:05:00Z",
-                        "metodo_entrega": "domicilio",
-                        "direccion_entrega": "6a avenida 10-22, Zona 1",
-                        "total_articulos": 2,
-                        "articulos_pendientes": 1,
-                        "articulos_evaluados": 1
-                    }
-                ],
-                "total": 12
-            }
-        }
+    return SolicitudListResponse(
+        items=items_con_detalle,
+        total=total
+    )

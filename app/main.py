@@ -53,6 +53,14 @@ from app.rbac.attach import attach_rbac_guards
 # Registro de routers (agrupados por dominio funcional)
 # --------------------------------------------------------------------------------------
 
+# Instancia de aplicación
+app = FastAPI(
+    title="API Pignoraticios",
+    root_path=getattr(settings, "ROOT_PATH", ""),
+    docs_url=getattr(settings, "DOCS_URL", "/docs"),
+    redoc_url=None,
+)
+
 # Salud y autenticación
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(auth_router)
@@ -66,7 +74,8 @@ app.include_router(solicitudes_completa_router)
 app.include_router(solicitudes_articulos.router)
 app.include_router(recepciones_router)
 app.include_router(cloudinary_router)
-
+# solicitud con filtro:
+app.include_router(solicitudes_filtros_router)
 # Pagos
 app.include_router(pagos_list_router)       # GET  /prestamos/{id_prestamo}/pagos
 app.include_router(pagos_validar_router)    # POST /pagos/{id_pago}/validar
@@ -87,13 +96,6 @@ app.include_router(usuarios_permisos_router)
 # Préstamos (recálculo)
 app.include_router(prestamos_recalcular_router)        # individual
 app.include_router(prestamos_recalcular_bulk_router)   # bulk
-
-app = FastAPI(
-     title="API Pignoraticios",
-     root_path=getattr(settings, "ROOT_PATH", ""),
-     docs_url=getattr(settings, "DOCS_URL", "/docs"),
-     redoc_url=None,
-)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
