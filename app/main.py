@@ -15,6 +15,7 @@ from app.api.routers.solicitudes_completa import router as solicitudes_completa_
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
 from app.api.routers.crear_pagos import router as crear_pagos_router  # <-- nuevo
+from app.api.routers import dashboard
 # solicitudes con filtros avanzados:
 from app.api.routers.solicitud_filtro import router as solicitudes_filtros_router
 
@@ -74,6 +75,7 @@ app.include_router(solicitudes_completa_router)
 app.include_router(solicitudes_articulos.router)
 app.include_router(recepciones_router)
 app.include_router(cloudinary_router)
+app.include_router(dashboard.router)
 # solicitud con filtro:
 app.include_router(solicitudes_filtros_router)
 # Pagos
