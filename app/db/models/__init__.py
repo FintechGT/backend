@@ -7,7 +7,9 @@ from .estado_inventario import EstadoInventario  # ← Debe estar
 from .solicitud import Solicitud
 from .articulo import Articulo
 from .articulo_foto import ArticuloFoto
+# ...existing code...
 from .prestamo import Prestamo
+from .pago import Pago
 # (Opcional) Si usas auditoría / usuario en este arranque:
 from .auditoria import Auditoria
 from .user import User
