@@ -25,21 +25,35 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserResponse)
 async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
-    if getattr(settings, "AUTH_GOOGLE_ONLY", False):
+    # 🔹 Solo bloquear si AUTH_GOOGLE_ONLY está explícitamente en True
+    if getattr(settings, "AUTH_GOOGLE_ONLY", False) is True:
         raise HTTPException(status_code=400, detail="El registro es solo con Google")
 
     email = (data.email or "").strip().lower()
     domain = email.split("@")[-1] if "@" in email else ""
 
-    if getattr(settings, "ALLOWED_EMAIL_DOMAIN", ""):
-        allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
+    # 🔹 SOLO validar dominio si ALLOWED_EMAIL_DOMAIN tiene valor
+    allowed_domain = getattr(settings, "ALLOWED_EMAIL_DOMAIN", None)
+    if allowed_domain and allowed_domain.strip():  # 👈 Solo si NO está vacío
+        allowed = allowed_domain.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Solo correos @{allowed}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail=f"Solo correos @{allowed}"
+            )
 
-    if is_disposable_domain(domain):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No se permiten correos temporales/desechables")
-    if not has_mx_records(domain):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dominio de correo inválido (sin registros MX)")
+    # 🔹 Validaciones de seguridad - COMENTADAS para permitir correos de prueba
+    # Descomenta estas líneas si quieres validar correos reales en producción
+    # if is_disposable_domain(domain):
+    #     raise HTTPException(
+    #         status_code=status.HTTP_400_BAD_REQUEST, 
+    #         detail="No se permiten correos temporales/desechables"
+    #     )
+    # if not has_mx_records(domain):
+    #     raise HTTPException(
+    #         status_code=status.HTTP_400_BAD_REQUEST, 
+    #         detail="Dominio de correo inválido (sin registros MX)"
+    #     )
 
     try:
         normalized = UserRegister(
@@ -56,9 +70,15 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
 @router.post("/login")
 async def login_user(data: UserLogin, db: AsyncSession = Depends(get_db)):
     email = (data.email or "").strip().lower()
+    
+    # 🔹 Sin validaciones de dominio en login
     user = await AuthService.authenticate_user(email, data.password, db)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Credenciales inválidas"
+        )
+    
     access_token = create_access_token({"sub": str(user.ID_Usuario)})
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -72,21 +92,35 @@ async def login_with_google(payload: GoogleToken, db: AsyncSession = Depends(get
             settings.GOOGLE_CLIENT_ID,
         )
     except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de Google inválido")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Token de Google inválido"
+        )
 
     if info.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Issuer inválido")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Issuer inválido"
+        )
 
     if not bool(info.get("email_verified")):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email no verificado por Google")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Email no verificado por Google"
+        )
 
     email = str(info.get("email", "")).lower()
     nombre = (info.get("name") or info.get("given_name") or email.split("@")[0])[:30]
 
-    if getattr(settings, "ALLOWED_EMAIL_DOMAIN", ""):
-        allowed = settings.ALLOWED_EMAIL_DOMAIN.lower()
+    # 🔹 SOLO validar dominio para Google si ALLOWED_EMAIL_DOMAIN tiene valor
+    allowed_domain = getattr(settings, "ALLOWED_EMAIL_DOMAIN", None)
+    if allowed_domain and allowed_domain.strip():
+        allowed = allowed_domain.lower()
         if not (email.endswith(f"@{allowed}") or (allowed == "gmail.com" and email.endswith("@googlemail.com"))):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Solo correos @{allowed}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail=f"Solo correos @{allowed}"
+            )
 
     result = await db.execute(select(User).where(func.lower(User.Correo) == email))
     user = result.scalar_one_or_none()
