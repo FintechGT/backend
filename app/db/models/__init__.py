@@ -1,6 +1,3 @@
-# ...existing code...
-from .estado_ruta import EstadoRuta
-# ...existing code...
 from .ruta_cobranza import RutaCobranza
 from .cat_tipo_articulo import CatTipoArticulo
 from .estado_articulo import EstadoArticulo
