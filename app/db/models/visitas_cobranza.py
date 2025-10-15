@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, DECIMAL, TIMESTAMP, ForeignKey, text
 from app.db.database import Base
 
-class VisitasCobranza(Base):
+class VisitaCobranza(Base):
     __tablename__ = "Visitas_Cobranza"
 
     id_visita = Column("Id_visita", Integer, primary_key=True, autoincrement=True)
