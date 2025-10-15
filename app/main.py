@@ -15,6 +15,8 @@ from app.api.routers.solicitudes_completa import router as solicitudes_completa_
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
 from app.api.routers.crear_pagos import router as crear_pagos_router  # <-- nuevo
+# solicitudes con filtros avanzados:
+from app.api.routers.solicitud_filtro import router as solicitudes_filtros_router
 
 # Solicitudes + artículos (agregar/obtener fotos y artículos)
 from app.api.routers import solicitudes_articulos  # módulo que expone .router
