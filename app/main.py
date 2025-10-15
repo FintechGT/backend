@@ -127,6 +127,7 @@ app.include_router(prestamos_recalcular_bulk_router)   # bulk
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
 attach_rbac_guards(app)
+
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
@@ -157,3 +158,11 @@ def root():
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+
+
+
+
+
+# Reglas por Tipo de Artículo
+from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
+app.include_router(regla_tipo_articulo_router)
