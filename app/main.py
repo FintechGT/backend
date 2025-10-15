@@ -168,12 +168,3 @@ def root():
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
-
-
-
-
-
-# Reglas por Tipo de Artículo
-from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
-app.include_router(regla_tipo_articulo_router)
->>>>>>> 1558decb3b5d2db1538c6ae59796d7ede61f7a52
