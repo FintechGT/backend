@@ -13,12 +13,10 @@ from app.db.models.articulo import Articulo
 from app.db.models.estado_articulo import EstadoArticulo
 from app.schemas.solicitud_filtro_models import SolicitudConDetalleOut, SolicitudListResponse
 
-
 router = APIRouter(
     prefix="/solicitudes-filtros",
     tags=["Solicitudes - Filtros"]
 )
-
 
 @router.get("", response_model=SolicitudListResponse)
 async def listar_solicitudes_con_filtros(
@@ -35,61 +33,50 @@ async def listar_solicitudes_con_filtros(
     """
     Listar solicitudes con filtros avanzados
     """
-    
-    # ========== CONSTRUCCIÓN DE LA QUERY BASE ==========
+    # ========== CONSTRUCCIÓN DE LA QUERY BASE ========== 
     query = (
         select(Solicitud)
-    .join(EstadoSolicitud, Solicitud.id_estado == EstadoSolicitud.id_estado_solicitud)
-        .join(User, Solicitud.id_usuario == User.id_usuario)
+        .join(EstadoSolicitud, Solicitud.id_estado == EstadoSolicitud.id_estado_solicitud)
+        .join(User, Solicitud.id_usuario == User.ID_Usuario)
         .options(
-            selectinload(Solicitud.estado_solicitud),
-            selectinload(Solicitud.usuario)
+            selectinload(Solicitud.estado)
         )
     )
-    
-    # ========== APLICAR FILTROS ==========
+    # ========== APLICAR FILTROS ========== 
     condiciones = []
-    
     if estado:
         condiciones.append(EstadoSolicitud.nombre.ilike(f"%{estado}%"))
-    
     if usuario_id:
         condiciones.append(Solicitud.id_usuario == usuario_id)
-    
     if metodo_entrega:
         condiciones.append(Solicitud.metodo_entrega == metodo_entrega)
-    
     if fecha_desde:
         condiciones.append(Solicitud.fecha_envio >= fecha_desde)
-    
     if fecha_hasta:
         condiciones.append(Solicitud.fecha_envio <= fecha_hasta)
-    
     if condiciones:
         query = query.where(and_(*condiciones))
-    
-    # ========== CONTAR TOTAL ==========
+    # ========== CONTAR TOTAL ========== 
     count_query = select(func.count()).select_from(query.subquery())
     result_count = await db.execute(count_query)
     total = result_count.scalar() or 0
-    
-    # ========== ORDENAMIENTO ==========
+    # ========== ORDENAMIENTO ========== 
     if sort == "desc":
         query = query.order_by(Solicitud.fecha_envio.desc())
     else:
         query = query.order_by(Solicitud.fecha_envio.asc())
-    
-    # ========== PAGINACIÓN ==========
+    # ========== PAGINACIÓN ========== 
     query = query.limit(limit).offset(offset)
-    
-    # ========== EJECUTAR QUERY ==========
+    # ========== EJECUTAR QUERY ========== 
     result = await db.execute(query)
     solicitudes = result.scalars().all()
-    
-    # ========== CONSTRUIR RESPUESTA ==========
+    # ========== CONSTRUIR RESPUESTA ========== 
     items_con_detalle = []
-    
     for solicitud in solicitudes:
+        # Obtener datos del usuario
+        query_usuario = select(User).where(User.ID_Usuario == solicitud.id_usuario)
+        result_usuario = await db.execute(query_usuario)
+        usuario = result_usuario.scalar_one_or_none()
         # Contar artículos por estado
         query_articulos = (
             select(
@@ -108,24 +95,22 @@ async def listar_solicitudes_con_filtros(
                 ).label("evaluados")
             )
             .select_from(Articulo)
-            .join(EstadoArticulo, Articulo.id_estado == EstadoArticulo.id_estado)
+            .join(EstadoArticulo, Articulo.id_estado == EstadoArticulo.id_estado_articulo)
             .where(Articulo.id_solicitud == solicitud.id_solicitud)
         )
-        
         result_articulos = await db.execute(query_articulos)
         contadores = result_articulos.first()
-        
         # Construir objeto de respuesta
         solicitud_dict = {
             "id_solicitud": solicitud.id_solicitud,
             "id_usuario": solicitud.id_usuario,
             "usuario": {
-                "nombre": solicitud.usuario.nombre if solicitud.usuario else "Desconocido",
-                "correo": solicitud.usuario.correo if solicitud.usuario else ""
+                "nombre": usuario.Nombre if usuario else "Desconocido",
+                "correo": usuario.Correo if usuario else ""
             },
             "estado": {
-                "id": solicitud.estado_solicitud.id_estado,
-                "nombre": solicitud.estado_solicitud.nombre
+                "id": solicitud.estado.id_estado_solicitud,
+                "nombre": solicitud.estado.nombre
             },
             "fecha_envio": solicitud.fecha_envio,
             "metodo_entrega": solicitud.metodo_entrega,
@@ -134,9 +119,7 @@ async def listar_solicitudes_con_filtros(
             "articulos_pendientes": contadores.pendientes or 0,
             "articulos_evaluados": contadores.evaluados or 0
         }
-        
         items_con_detalle.append(SolicitudConDetalleOut(**solicitud_dict))
-    
     return SolicitudListResponse(
         items=items_con_detalle,
         total=total

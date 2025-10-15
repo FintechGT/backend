@@ -11,7 +11,6 @@ from app.db.models.user import User
 from app.db.models.estado_solicitud import EstadoSolicitud
 from app.db.models.articulo import Articulo
 
-from app.schemas.solicitud_filtro_models import SolicitudConDetalleOut, SolicitudListResponse
 from app.db.models.estado_articulo import EstadoArticulo
 
 
@@ -22,7 +21,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=SolicitudListResponse)
+@router.get("", response_model=None)
 async def listar_solicitudes_con_filtros(
     estado: Optional[str] = Query(None, description="Filtro por nombre de estado (pendiente, evaluada, rechazada)"),
     usuario_id: Optional[int] = Query(None, description="Filtro por cliente (solo admins)"),
@@ -88,9 +87,9 @@ async def listar_solicitudes_con_filtros(
     result = await db.execute(query)
     solicitudes = result.scalars().all()
     
-    # ========== CONSTRUIR RESPUESTA ==========
+    # ========== CONSTRUIR RESPUESTA ========== 
+    from app.schemas.solicitud_filtro_models import SolicitudConDetalleOut, SolicitudListResponse
     items_con_detalle = []
-    
     for solicitud in solicitudes:
         # Contar artículos por estado
         query_articulos = (
@@ -113,10 +112,8 @@ async def listar_solicitudes_con_filtros(
             .join(EstadoArticulo, Articulo.id_estado == EstadoArticulo.id_estado)
             .where(Articulo.id_solicitud == solicitud.id_solicitud)
         )
-        
         result_articulos = await db.execute(query_articulos)
         contadores = result_articulos.first()
-        
         # Construir objeto de respuesta
         solicitud_dict = {
             "id_solicitud": solicitud.id_solicitud,
@@ -136,9 +133,7 @@ async def listar_solicitudes_con_filtros(
             "articulos_pendientes": contadores.pendientes or 0,
             "articulos_evaluados": contadores.evaluados or 0
         }
-        
         items_con_detalle.append(SolicitudConDetalleOut(**solicitud_dict))
-    
     return SolicitudListResponse(
         items=items_con_detalle,
         total=total
