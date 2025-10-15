@@ -1,16 +1,10 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.api.routers import health
-from app.api.routers import auth
-from app.api.routers import solicitudes
-from app.api.routers.configuraciones_generales import router as configuraciones_router
-app = FastAPI(title="API Pignoraticios")
 
-<<<<<<< HEAD
-=======
 # Configuración y modelos base
 from app.core.config import settings
 from app.db import models  # noqa: F401  # asegura el registro de modelos para SQLAlchemy
+from fastapi import FastAPI, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRoute
 
 # Routers base / negocio
 from app.api.routers.health import router as health_router
@@ -52,48 +46,7 @@ from app.rbac.attach import attach_rbac_guards
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
-def parse_origins(raw: str | None) -> list[str]:
-    """Convierte una cadena separada por comas en lista de orígenes permitidos."""
-    if not raw:
-        return []
-    return [o.strip() for o in raw.split(",") if o.strip()]
 
-origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
-
-# Orígenes de respaldo usados en desarrollo y despliegue
-fallback = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://frontend-web-rust-nine.vercel.app",
-]
-for o in fallback:
-    if o not in origins:
-        origins.append(o)
-
-# --------------------------------------------------------------------------------------
-# Instancia de aplicación
-# --------------------------------------------------------------------------------------
-app = FastAPI(
-    title="API Pignoraticios",
-    root_path=getattr(settings, "ROOT_PATH", ""),
-    docs_url=getattr(settings, "DOCS_URL", "/docs"),
-    redoc_url=None,
-)
-
-# El middleware CORS debe ir antes de incluir cualquier router
->>>>>>> 1558decb3b5d2db1538c6ae59796d7ede61f7a52
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
-)
-
-<<<<<<< HEAD
-app.include_router(health.router, prefix="/health", tags=["health"])
-app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(solicitudes.router, prefix="/solicitudes", tags=["solicitudes"])
-app.include_router(configuraciones_router, tags=["configuraciones"])
-=======
 # --------------------------------------------------------------------------------------
 # Registro de routers (agrupados por dominio funcional)
 # --------------------------------------------------------------------------------------
@@ -133,11 +86,12 @@ app.include_router(usuarios_permisos_router)
 app.include_router(prestamos_recalcular_router)        # individual
 app.include_router(prestamos_recalcular_bulk_router)   # bulk
 
-# Préstamos (evaluación de estado / procesos)
-app.include_router(prestamos_evaluar_estado_router)
-app.include_router(procesar_incumplidos_router)
-attach_rbac_guards(app)
-
+app = FastAPI(
+     title="API Pignoraticios",
+     root_path=getattr(settings, "ROOT_PATH", ""),
+     docs_url=getattr(settings, "DOCS_URL", "/docs"),
+     redoc_url=None,
+)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
@@ -168,3 +122,4 @@ def root():
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+app.include_router(articulos_valuador_router)
