@@ -19,7 +19,6 @@ from app.db.models.auditoria import Auditoria
 # Asegúrate de que la ruta 'app.db.models.cliente' sea correcta y el archivo exista.
 if TYPE_CHECKING:
     from app.db.models.user import User
-    from app.db.models.cliente import Cliente  # <-- VERIFICA ESTA RUTA
 
 # Schemas
 from app.schemas.ruta_cobranza import (
@@ -51,11 +50,8 @@ async def crear_ruta_cobranza(
     - Crea la ruta y las visitas pendientes asociadas.
     - Registra la acción en auditoría.
     """
-    # Importar modelo aquí para evitar dependencias circulares en el arranque
-    from app.db.models.user import User
-
     # 1. Validar que el usuario cobrador existe y tiene el rol correcto
-    cobrador = await db.get(User, datos.id_usuario_cobrador, options=[selectinload(User.rol)])
+    cobrador: Optional[User] = await db.get(User, datos.id_usuario_cobrador, options=[selectinload(User.rol)])
     if not cobrador or not hasattr(cobrador, 'rol') or not cobrador.rol or cobrador.rol.nombre.upper() != "COBRADOR":
         raise HTTPException(status_code=404, detail="Usuario cobrador no encontrado o no tiene el rol 'COBRADOR'")
 
@@ -223,15 +219,9 @@ async def obtener_visitas_de_ruta(
     """
     # Importar modelos aquí para evitar dependencias circulares en el arranque
     from app.db.models.prestamo import Prestamo
-    # NOTA: La importación de 'Cliente' sigue siendo un punto de atención.
-    # Asumo que existe un modelo Cliente en algún lugar. Si está en 'user.py',
-    # la importación debería ser 'from app.db.models.user import Cliente'.
-    # Si no existe, este endpoint fallará.
 
     options = [
-        selectinload(RutaCobranza.visitas)
-        .selectinload(VisitasCobranza.prestamo)
-        .selectinload(Prestamo.cliente)
+        selectinload(RutaCobranza.visitas).selectinload(VisitasCobranza.prestamo).selectinload(Prestamo.usuario)
     ]
     
     stmt = select(RutaCobranza).where(RutaCobranza.id_ruta == id_ruta)
@@ -248,6 +238,9 @@ async def obtener_visitas_de_ruta(
 
     # Mapeo manual para asegurar la estructura del schema
     for visita in ruta.visitas:
-        visita.prestamo.direccion_cobro = visita.prestamo.cliente.direccion_particular # Asumiendo que esta es la dirección de cobro
+        # Asignar la dirección del usuario del préstamo a un campo temporal para el schema
+        if visita.prestamo and visita.prestamo.usuario:
+            # Asumiendo que el modelo User tiene un campo 'direccion'
+            visita.prestamo.direccion_cobro = visita.prestamo.usuario.direccion
 
     return ruta

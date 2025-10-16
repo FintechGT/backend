@@ -1,5 +1,6 @@
 # app/api/routers/visitas_cobranza.py
 from datetime import datetime
+from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
@@ -19,6 +20,17 @@ from app.db.models.auditoria import Auditoria
 
 # Schemas
 from app.schemas.visita_cobranza import VisitaCobranzaCreate, VisitaCobranzaCreada
+
+# --- Constantes y Enums para evitar "magic strings" ---
+class ResultadoVisita(str, Enum):
+    COBRO_EXITOSO = "cobro_exitoso"
+    NO_ENCONTRADO = "no_encontrado"
+    RECHAZO_PAGO = "rechazo_pago"
+    # Agrega otros resultados posibles aquí
+
+ESTADO_PAGO_PENDIENTE = "pendiente"
+ACCION_AUDITORIA = "REGISTRAR_VISITA_COBRANZA"
+
 
 router = APIRouter(prefix="/visitas-cobranza", tags=["Visitas de Cobranza"])
 
@@ -40,6 +52,9 @@ async def registrar_visita_cobranza(
     - Si el cobro es exitoso, crea un registro de Pago en estado 'pendiente'.
     - Actualiza el registro de la visita.
     """
+    # Estandarizar obtención del ID de usuario
+    id_usuario_actual = getattr(current_user, 'id_usuario', getattr(current_user, 'ID_Usuario', None))
+
     # 1. Validar que la visita exista y pertenezca a la ruta y al cobrador
     stmt = (
         select(VisitasCobranza)
@@ -48,7 +63,7 @@ async def registrar_visita_cobranza(
             VisitasCobranza.id_ruta == datos.id_ruta_cobranza,
             VisitasCobranza.id_prestamo == datos.id_prestamo,
             VisitasCobranza.resultado.is_(None),  # Solo se puede registrar una vez
-            RutaCobranza.id_usuario_cobrador == current_user.ID_Usuario,
+            RutaCobranza.id_usuario_cobrador == id_usuario_actual,
         )
         .options(selectinload(VisitasCobranza.prestamo))
     )
@@ -62,7 +77,7 @@ async def registrar_visita_cobranza(
         )
 
     # 2. Validaciones de negocio
-    if datos.resultado == "cobro_exitoso" and (
+    if datos.resultado == ResultadoVisita.COBRO_EXITOSO and (
         datos.monto_pagado is None or datos.monto_pagado <= 0
     ):
         raise HTTPException(
@@ -73,10 +88,10 @@ async def registrar_visita_cobranza(
     id_pago_nuevo = None
     try:
         # 3. Si el cobro fue exitoso, crear el pago
-        if datos.resultado == "cobro_exitoso":
+        if datos.resultado == ResultadoVisita.COBRO_EXITOSO:
             # Obtener estado 'pendiente' para el pago
             estado_pendiente_res = await db.execute(
-                select(EstadoPago).where(func.lower(EstadoPago.nombre) == "pendiente")
+                select(EstadoPago).where(func.lower(EstadoPago.nombre) == ESTADO_PAGO_PENDIENTE)
             )
             estado_pendiente = estado_pendiente_res.scalar_one_or_none()
             if not estado_pendiente:
@@ -92,7 +107,7 @@ async def registrar_visita_cobranza(
                 fecha_pago=datetime.utcnow().date(),
                 medio_pago=datos.medio_pago,
                 referencia_bancaria=datos.ref_bancaria,
-                id_usuario_registro=current_user.ID_Usuario,
+                id_usuario_registro=id_usuario_actual,
             )
             db.add(nuevo_pago)
             await db.flush()  # Para obtener el ID del pago
@@ -101,15 +116,15 @@ async def registrar_visita_cobranza(
         # 4. Actualizar la visita
         visita.resultado = datos.resultado
         visita.comentario = datos.comentario
-        visita.monto_pagado = datos.monto_pagado if datos.resultado == "cobro_exitoso" else None
+        visita.monto_pagado = datos.monto_pagado if datos.resultado == ResultadoVisita.COBRO_EXITOSO else None
         visita.gps = datos.gps
         visita.fecha_visita = datetime.utcnow()
         visita.id_pago = id_pago_nuevo
 
         # 5. Auditoría
         audit = Auditoria(
-            id_usuario=current_user.ID_Usuario,
-            accion="REGISTRAR_VISITA_COBRANZA",
+            id_usuario=id_usuario_actual,
+            accion=ACCION_AUDITORIA,
             modulo="VisitasCobranza",
             fecha_hora=datetime.utcnow(),
             detalle=f"Visita id={visita.id_visita}, resultado={datos.resultado}, monto={datos.monto_pagado or 0}",
@@ -121,7 +136,10 @@ async def registrar_visita_cobranza(
 
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error al registrar la visita: {e}")
+        # No exponer detalles internos del error al cliente
+        # En un entorno de producción, aquí se debería loggear el error `e`
+        # import logging; logging.error(f"Error al registrar visita: {e}")
+        raise HTTPException(status_code=500, detail="Ocurrió un error interno al registrar la visita.")
 
     return VisitaCobranzaCreada(
         id_visita=visita.id_visita,
