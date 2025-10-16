@@ -18,7 +18,8 @@ requests==2.32.3
 dnspython==2.8.0
 
 weasyprint==66.0
-xhtml2pdf==0.2.13
 reportlab==4.1.0
 cloudinary==1.41.0
 
+pyHanko==0.31.0
+pyhanko-certvalidator==0.29.0
