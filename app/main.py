@@ -51,6 +51,8 @@ from app.api.routers import acl_admin
 from app.api.routers import admin_usuarios
 
 from app.api.routers.contratos import router_prestamos, router_contratos
+from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
+
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -143,6 +145,7 @@ app.include_router(admin_usuarios.router)
 app.include_router(router_prestamos)  
 app.include_router(router_contratos) 
 
+app.include_router(admin_solicitudes_router)
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
