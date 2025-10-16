@@ -50,6 +50,7 @@ from app.api.routers import inventario_venta
 from app.api.routers import acl_admin
 from app.api.routers import admin_usuarios
 
+from app.api.routers.contratos import router_prestamos, router_contratos
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -138,6 +139,9 @@ attach_rbac_guards(app)
 app.include_router(inventario_venta.router)
 app.include_router(acl_admin.router)
 app.include_router(admin_usuarios.router)
+
+app.include_router(router_prestamos)  
+app.include_router(router_contratos) 
 
 # Usuarios (si existe el router)
 try:
