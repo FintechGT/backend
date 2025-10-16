@@ -42,9 +42,15 @@ from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalc
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
 
+# RBAC
 from app.rbac.attach import attach_rbac_guards
 
-from app.api.routers import inventario_venta 
+# Inventario y ACL admin + Admin usuarios
+from app.api.routers import inventario_venta
+from app.api.routers import acl_admin
+from app.api.routers import admin_usuarios
+
+from app.api.routers.contratos import router_prestamos, router_contratos
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -112,7 +118,7 @@ app.include_router(crear_pagos_router)      # POST /pagos (o lo que definas)
 app.include_router(articulos_valuador_router)
 app.include_router(articulo_rechazar_router)
 
-# Seguridad y control de acceso
+# Seguridad y control de acceso (ACL)
 app.include_router(modulos_router)
 app.include_router(permisos_router)
 app.include_router(roles_router)
@@ -127,8 +133,16 @@ app.include_router(prestamos_recalcular_bulk_router)   # bulk
 # Préstamos (evaluación de estado / procesos)
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
+
+# Inventario y ACL Admin + Admin Usuarios
 attach_rbac_guards(app)
 app.include_router(inventario_venta.router)
+app.include_router(acl_admin.router)
+app.include_router(admin_usuarios.router)
+
+app.include_router(router_prestamos)  
+app.include_router(router_contratos) 
+
 # Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
@@ -136,6 +150,10 @@ try:
 except Exception:
     # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
     pass
+
+# Reglas por Tipo de Artículo
+from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
+app.include_router(regla_tipo_articulo_router)
 
 # --------------------------------------------------------------------------------------
 # Utilidades de diagnóstico (opcional)
@@ -159,11 +177,3 @@ def root():
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
 print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
-
-
-
-
-
-# Reglas por Tipo de Artículo
-from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
-app.include_router(regla_tipo_articulo_router)
