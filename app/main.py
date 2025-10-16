@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routers import health
 from app.api.routers import auth
 from app.api.routers import solicitudes
-from app.api.routers import reglas  # ← AGREGAR ESTA LÍNEA
+from app.api.routers import reglas 
+from app.api.routers import prestamos_movimientos
 
 app = FastAPI(title="API Pignoraticios")
 
@@ -16,4 +17,5 @@ app.add_middleware(
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(solicitudes.router)
-app.include_router(reglas.router, prefix="/api/v1", tags=["reglas"])  
+app.include_router(reglas.router, prefix="/api/v1", tags=["reglas"]) 
+app.include_router(prestamos_movimientos.router, prefix="/api/v1") 
