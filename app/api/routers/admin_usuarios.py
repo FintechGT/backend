@@ -1,16 +1,18 @@
+# app/api/routers/admin_usuarios.py
 from __future__ import annotations
-from typing import Optional, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
-from sqlalchemy.exc import IntegrityError, ProgrammingError, OperationalError
-
-from passlib.hash import pbkdf2_sha256
+from typing import Optional, Dict, List, Tuple
 from datetime import datetime
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, status
+from sqlalchemy import select, func, or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+
+from passlib.hash import pbkdf2_sha256
+
 from app.db.database import get_db
-from app.core.security import get_current_user  # tu security.py, no lo tocamos
+from app.core.security import get_current_user  # token → User
 
 # MODELOS
 from app.db.models.user import User
@@ -19,21 +21,27 @@ from app.db.models.usuario_rol import UsuarioRol
 from app.db.models.auditoria import Auditoria
 from app.db.models.permiso import Permiso
 from app.db.models.rol_permiso import RolPermiso
-# Usuario_Permiso es opcional; se intentará importar solo si existe modelo/tabla
 
 # SCHEMAS
 from app.schemas.admin_usuarios import (
+    # listado
     UsuariosListResponse, UsuarioResumenOut,
+    # patch estado
     UsuarioEstadoIn, UsuarioEstadoOut,
+    # actividad
     ActividadResponse, UsuarioMiniOut, AuditoriaItemOut,
+    # reset password
     ResetPasswordIn, ResetPasswordOut,
+    # detalle
+    UsuarioDetalleOut,
 )
 
 router = APIRouter(prefix="/admin/usuarios", tags=["admin-usuarios"])
 
-# ==========================
+
+# ============================================================
 # Helpers de autorización
-# ==========================
+# ============================================================
 async def _user_has_role(db: AsyncSession, id_usuario: int, role_name: str) -> bool:
     q = (
         select(func.count())
@@ -43,66 +51,44 @@ async def _user_has_role(db: AsyncSession, id_usuario: int, role_name: str) -> b
     )
     return (await db.scalar(q) or 0) > 0
 
+
 async def _tiene_permiso(db: AsyncSession, id_usuario: int, codigo_permiso: str) -> bool:
     """
-    1) Si existe Usuario_Permiso y hay override:
-       - 'deny' → deniega
-       - 'allow' → permite
-    2) Si no hay override o tabla no existe → verifica por Rol_Permiso
-    3) Fallback: si tiene rol ADMINISTRADOR → permite
+    Verifica permiso efectivo del usuario:
+      1) Si tiene rol ADMINISTRADOR → True
+      2) Roles → RolPermiso (otorgado) + Permiso activo
     """
-    # 1) Override por usuario (solo si existe el modelo/tabla)
-    try:
-        from app.db.models.usuario_permiso import UsuarioPermiso  # puede no existir
-        q_user = (
-            select(UsuarioPermiso.decision)
-            .join(Permiso, Permiso.id_permiso == UsuarioPermiso.id_permiso)
-            .where(UsuarioPermiso.id_usuario == id_usuario, Permiso.codigo == codigo_permiso)
-        )
-        rows = (await db.execute(q_user)).all()
-        if rows:
-            decisions = {str(dec).lower() for (dec,) in rows if dec}
-            if "deny" in decisions:
-                return False
-            if "allow" in decisions:
-                return True
-    except (ProgrammingError, OperationalError, ModuleNotFoundError, ImportError) as e:
-        # Si la tabla no existe o el modelo no está, continuar sin romper
-        if "doesn't exist" not in str(e).lower():
-            pass
-
-    # 2) Permisos por rol
-    q_role = (
-        select(func.count())
-        .select_from(RolPermiso)
-        .join(Permiso, Permiso.id_permiso == RolPermiso.id_permiso)
-        .join(Rol, Rol.id_rol == RolPermiso.id_rol)
-        .join(UsuarioRol, UsuarioRol.id_rol == Rol.id_rol)
-        .where(
-            UsuarioRol.id_usuario == id_usuario,
-            Permiso.codigo == codigo_permiso,
-            RolPermiso.otorgado.is_(True),
-            Permiso.activo.is_(True),
-            Rol.activo.is_(True),
-        )
-    )
-    if (await db.scalar(q_role)) > 0:
-        return True
-
-    # 3) Fallback: super rol
     if await _user_has_role(db, id_usuario, "ADMINISTRADOR"):
         return True
 
-    return False
+    q = (
+        select(func.count())
+        .select_from(UsuarioRol)
+        .join(Rol, Rol.id_rol == UsuarioRol.id_rol)
+        .join(RolPermiso, RolPermiso.id_rol == Rol.id_rol)
+        .join(Permiso, Permiso.id_permiso == RolPermiso.id_permiso)
+        .where(
+            UsuarioRol.id_usuario == id_usuario,
+            RolPermiso.otorgado.is_(True),
+            Rol.activo.is_(True),
+            Permiso.activo.is_(True),
+            Permiso.codigo == codigo_permiso,
+        )
+    )
+    return (await db.scalar(q) or 0) > 0
+
 
 async def _requerir_permiso(db: AsyncSession, user: User, codigo_permiso: str):
-    if not (await _tiene_permiso(db, user.ID_Usuario, codigo_permiso)):
+    uid = getattr(user, "ID_Usuario", None) or getattr(user, "id_usuario", None) or getattr(user, "id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Usuario inválido")
+    if not await _tiene_permiso(db, int(uid), codigo_permiso):
         raise HTTPException(status_code=403, detail="No tienes permiso para esta operación.")
 
 
-# ==========================
-# 4.1 GET /admin/usuarios
-# ==========================
+# ============================================================
+# 1) LISTADO DE USUARIOS
+# ============================================================
 @router.get("", response_model=UsuariosListResponse)
 async def listar_usuarios_admin(
     q: Optional[str] = Query(default=None, description="Busca por nombre/correo (LIKE %q%)"),
@@ -118,11 +104,9 @@ async def listar_usuarios_admin(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # permiso requerido
     await _requerir_permiso(db, user, "ADMIN_USUARIOS_LISTAR")
 
-    # base
-    stmt = select(User).where(True)
+    stmt = select(User)
 
     # filtros
     if q:
@@ -130,29 +114,30 @@ async def listar_usuarios_admin(
         stmt = stmt.where(or_(func.lower(User.Nombre).like(like), func.lower(User.Correo).like(like)))
     if activo is not None:
         stmt = stmt.where(User.Estado_Activo == activo)
-    if verificado is not None:
+    if verificado is not None and hasattr(User, "Verificado"):
         stmt = stmt.where(User.Verificado == verificado)
     if fecha_alta_from:
         stmt = stmt.where(func.date(User.Created_At) >= fecha_alta_from)
     if fecha_alta_to:
         stmt = stmt.where(func.date(User.Created_At) <= fecha_alta_to)
 
-    # filtro por rol (por nombre o id)
+    # por rol (nombre o id)
     if rol:
         try:
             rol_id = int(rol)
-            stmt = stmt.join(UsuarioRol, UsuarioRol.id_usuario == User.ID_Usuario)\
-                       .join(Rol, Rol.id_rol == UsuarioRol.id_rol)\
-                       .where(Rol.id_rol == rol_id)
+            stmt = (
+                stmt.join(UsuarioRol, UsuarioRol.id_usuario == User.ID_Usuario)
+                .join(Rol, Rol.id_rol == UsuarioRol.id_rol)
+                .where(Rol.id_rol == rol_id)
+            )
         except ValueError:
-            stmt = stmt.join(UsuarioRol, UsuarioRol.id_usuario == User.ID_Usuario)\
-                       .join(Rol, Rol.id_rol == UsuarioRol.id_rol)\
-                       .where(Rol.nombre == rol)
+            stmt = (
+                stmt.join(UsuarioRol, UsuarioRol.id_usuario == User.ID_Usuario)
+                .join(Rol, Rol.id_rol == UsuarioRol.id_rol)
+                .where(Rol.nombre == rol)
+            )
 
-    # total
-    total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
-    if not total:
-        return UsuariosListResponse(total=0, items=[])
+    total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
     # orden
     sort_map = {
@@ -160,19 +145,16 @@ async def listar_usuarios_admin(
         "nombre": User.Nombre,
         "correo": User.Correo,
         "actualizado": User.Updated_At,
-        # "ultimo_login": ... si lo tienes en otra tabla, omitir aquí
     }
-    col = sort_map.get(sort or "fecha_alta")
+    col = sort_map.get((sort or "fecha_alta").lower())
     if not col:
         raise HTTPException(status_code=400, detail="Parámetro sort inválido.")
     order_col = col.desc() if (dir or "desc").lower() == "desc" else col.asc()
-    stmt = stmt.order_by(order_col)
+    stmt = stmt.order_by(order_col).limit(limit).offset(offset)
 
-    # paginación
-    stmt = stmt.limit(limit).offset(offset)
     users: List[User] = (await db.execute(stmt)).scalars().all()
 
-    # cargar roles en batch (evitar N+1)
+    # roles por usuario en batch
     uids = [u.ID_Usuario for u in users]
     roles_map: Dict[int, List[str]] = {uid: [] for uid in uids}
     if uids:
@@ -180,7 +162,7 @@ async def listar_usuarios_admin(
             await db.execute(
                 select(UsuarioRol.id_usuario, Rol.nombre)
                 .join(Rol, Rol.id_rol == UsuarioRol.id_rol)
-                .where(UsuarioRol.id_usuario.in_(uids))
+                .where(UsuarioRol.id_usuario.in_(uids), Rol.activo.is_(True))
             )
         ).all()
         for uid, rname in rows:
@@ -195,17 +177,124 @@ async def listar_usuarios_admin(
                 correo=u.Correo,
                 estado_activo=bool(u.Estado_Activo),
                 roles=sorted(roles_map.get(u.ID_Usuario, [])),
-                ultimo_login=None,  # si lo manejas, setéalo aquí
+                ultimo_login=None,  # si manejas último login en otra tabla, ajústalo
                 fecha_alta=u.Created_At.isoformat() if u.Created_At else "",
                 actualizado=u.Updated_At.isoformat() if u.Updated_At else "",
             )
         )
-    return UsuariosListResponse(total=int(total or 0), items=items)
+
+    return UsuariosListResponse(total=int(total), items=items)
 
 
-# ==========================
-# 4.2 PATCH /{id}/estado
-# ==========================
+# ============================================================
+# 2) DETALLE DE USUARIO
+# ============================================================
+@router.get("/{id_usuario}", response_model=UsuarioDetalleOut)
+async def obtener_usuario_admin(
+    id_usuario: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_user),
+):
+    await _requerir_permiso(db, admin, "ADMIN_USUARIOS_LISTAR")
+
+    obj = await db.get(User, id_usuario)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+    return UsuarioDetalleOut(
+        id=obj.ID_Usuario,
+        nombre=obj.Nombre,
+        correo=obj.Correo,
+        telefono=getattr(obj, "Telefono", None),
+        direccion=getattr(obj, "Direccion", None),
+        verificado=bool(getattr(obj, "Verificado", False)),
+        estado_activo=bool(obj.Estado_Activo),
+        created_at=obj.Created_At.isoformat() if obj.Created_At else None,
+        updated_at=obj.Updated_At.isoformat() if obj.Updated_At else None,
+    )
+
+
+# ============================================================
+# 3) ROLES DEL USUARIO / CATÁLOGO / ASIGNAR / QUITAR
+# ============================================================
+@router.get("/{id_usuario}/roles", response_model=list[str])
+async def listar_roles_de_usuario(
+    id_usuario: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_user),
+):
+    await _requerir_permiso(db, admin, "ADMIN_USUARIOS_LISTAR")
+
+    rows = (
+        await db.execute(
+            select(Rol.nombre)
+            .join(UsuarioRol, UsuarioRol.id_rol == Rol.id_rol)
+            .where(UsuarioRol.id_usuario == id_usuario, Rol.activo.is_(True))
+            .order_by(Rol.nombre.asc())
+        )
+    ).all()
+    return [r for (r,) in rows]
+
+
+@router.get("/roles", response_model=list[dict])
+async def listar_roles_disponibles(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_user),
+):
+    await _requerir_permiso(db, admin, "ADMIN_USUARIOS_LISTAR")
+
+    rows = (await db.execute(select(Rol).where(Rol.activo.is_(True)).order_by(Rol.nombre.asc()))).scalars().all()
+    return [{"id_rol": r.id_rol, "nombre": r.nombre} for r in rows]
+
+
+@router.post("/{id_usuario}/roles/{id_rol}", status_code=status.HTTP_204_NO_CONTENT)
+async def asignar_rol_a_usuario(
+    id_usuario: int,
+    id_rol: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_user),
+):
+    await _requerir_permiso(db, admin, "ADMIN_USUARIOS_EDITAR")
+
+    if not await db.get(User, id_usuario):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    if not await db.get(Rol, id_rol):
+        raise HTTPException(status_code=404, detail="Rol no encontrado.")
+
+    link = (
+        await db.execute(
+            select(UsuarioRol).where(UsuarioRol.id_usuario == id_usuario, UsuarioRol.id_rol == id_rol)
+        )
+    ).scalar_one_or_none()
+    if not link:
+        db.add(UsuarioRol(id_usuario=id_usuario, id_rol=id_rol))
+        await db.commit()
+    return
+
+
+@router.delete("/{id_usuario}/roles/{id_rol}", status_code=status.HTTP_204_NO_CONTENT)
+async def quitar_rol_de_usuario(
+    id_usuario: int,
+    id_rol: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_user),
+):
+    await _requerir_permiso(db, admin, "ADMIN_USUARIOS_EDITAR")
+
+    link = (
+        await db.execute(
+            select(UsuarioRol).where(UsuarioRol.id_usuario == id_usuario, UsuarioRol.id_rol == id_rol)
+        )
+    ).scalar_one_or_none()
+    if link:
+        await db.delete(link)
+        await db.commit()
+    return
+
+
+# ============================================================
+# 4) CAMBIAR ESTADO (activar / desactivar)
+# ============================================================
 @router.patch("/{id_usuario}/estado", response_model=UsuarioEstadoOut)
 async def cambiar_estado_usuario(
     id_usuario: int = Path(..., ge=1),
@@ -215,16 +304,14 @@ async def cambiar_estado_usuario(
 ):
     await _requerir_permiso(db, admin, "ADMIN_USUARIOS_EDITAR")
 
-    # no permitir desactivar al último ADMINISTRADOR activo
-    if body.estado_activo is False:
-        # ¿el objetivo es admin?
-        es_admin_obj = await db.scalar(
-            select(func.count())
-            .select_from(UsuarioRol)
-            .join(Rol, Rol.id_rol == UsuarioRol.id_rol)
-            .where(UsuarioRol.id_usuario == id_usuario, Rol.nombre == "ADMINISTRADOR", Rol.activo.is_(True))
-        )
-        if (es_admin_obj or 0) > 0:
+    # Bloquear auto-desactivarse
+    if not body.estado_activo and getattr(admin, "ID_Usuario", None) == id_usuario:
+        raise HTTPException(status_code=409, detail="No puedes desactivar tu propio usuario.")
+
+    # Evitar dejar sin admins
+    if not body.estado_activo:
+        es_obj_admin = await _user_has_role(db, id_usuario, "ADMINISTRADOR")
+        if es_obj_admin:
             admins_activos = await db.scalar(
                 select(func.count())
                 .select_from(User)
@@ -235,23 +322,18 @@ async def cambiar_estado_usuario(
             if (admins_activos or 0) <= 1:
                 raise HTTPException(status_code=409, detail="No puedes desactivar al último ADMINISTRADOR activo.")
 
-        # opcional: bloquear auto-desactivarse
-        if admin.ID_Usuario == id_usuario:
-            raise HTTPException(status_code=409, detail="No puedes desactivar tu propio usuario.")
-
     obj = await db.get(User, id_usuario)
     if not obj:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
     obj.Estado_Activo = bool(body.estado_activo)
     obj.Updated_At = datetime.utcnow()
-
     await db.commit()
     await db.refresh(obj)
 
-    # auditoría
+    # Auditoría
     aud = Auditoria(
-        id_usuario=admin.ID_Usuario,
+        id_usuario=getattr(admin, "ID_Usuario", None),
         accion="CAMBIO_ESTADO_USUARIO",
         modulo="AdminUsuarios",
         fecha_hora=datetime.utcnow(),
@@ -267,9 +349,9 @@ async def cambiar_estado_usuario(
     )
 
 
-# ==========================
-# 4.3 GET /{id}/actividad
-# ==========================
+# ============================================================
+# 5) ACTIVIDAD / AUDITORÍA
+# ============================================================
 @router.get("/{id_usuario}/actividad", response_model=ActividadResponse)
 async def actividad_usuario(
     id_usuario: int = Path(..., ge=1),
@@ -311,7 +393,7 @@ async def actividad_usuario(
     if fecha_to:
         stmt = stmt.where(func.date(Auditoria.fecha_hora) <= fecha_to)
 
-    total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
+    total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     stmt = stmt.order_by(Auditoria.fecha_hora.desc()).limit(limit).offset(offset)
     rows = (await db.execute(stmt)).scalars().all()
 
@@ -325,7 +407,7 @@ async def actividad_usuario(
                 accion=a.accion,
                 detalle=a.detalle,
                 old_values=(a.old_values if include_values else None),
-                new_values=(a.new_values if include_values else None),
+                new_values=((a.new_values if include_values else None)),
             )
         )
 
@@ -333,14 +415,14 @@ async def actividad_usuario(
         usuario=UsuarioMiniOut(
             id=obj.ID_Usuario, nombre=obj.Nombre, correo=obj.Correo, roles=sorted(roles)
         ),
-        total=int(total or 0),
+        total=int(total),
         items=items,
     )
 
 
-# ==========================
-# 4.4 POST /{id}/resetear-password
-# ==========================
+# ============================================================
+# 6) RESETEAR PASSWORD
+# ============================================================
 @router.post("/{id_usuario}/resetear-password", response_model=ResetPasswordOut)
 async def resetear_password_usuario(
     id_usuario: int = Path(..., ge=1),
@@ -350,16 +432,14 @@ async def resetear_password_usuario(
 ):
     await _requerir_permiso(db, admin, "ADMIN_USUARIOS_RESETEAR_PASSWORD")
 
-    if admin.ID_Usuario == id_usuario:
-        # Política opcional: no permitirse auto-resetear por este endpoint
+    if getattr(admin, "ID_Usuario", None) == id_usuario:
         raise HTTPException(status_code=409, detail="No puedes resetear tu propia contraseña por este endpoint.")
 
     obj = await db.get(User, id_usuario)
     if not obj:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
-    # Genera una contraseña temporal aleatoria y guarda su hash (no se devuelve la contraseña)
-    # Para evitar depender de bcrypt, usamos PBKDF2-HMAC-SHA256 (incluido en passlib core)
+    # genera hash temporal (no se devuelve la clave)
     temp_plain = f"tmp-{id_usuario}-{int(datetime.utcnow().timestamp())}"
     nuevo_hash = pbkdf2_sha256.hash(temp_plain)
 
@@ -372,7 +452,7 @@ async def resetear_password_usuario(
 
     # Auditoría
     aud = Auditoria(
-        id_usuario=admin.ID_Usuario,
+        id_usuario=getattr(admin, "ID_Usuario", None),
         accion="RESETEAR_PASSWORD",
         modulo="AdminUsuarios",
         fecha_hora=datetime.utcnow(),
@@ -383,7 +463,6 @@ async def resetear_password_usuario(
     db.add(aud)
     await db.commit()
 
-    # No exponemos contraseña; front debe forzar cambio al siguiente login
     return ResetPasswordOut(
         id=obj.ID_Usuario,
         reset_ok=True,
