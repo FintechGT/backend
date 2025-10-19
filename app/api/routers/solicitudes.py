@@ -1,4 +1,76 @@
-# app/api/routers/solicitudes.py
+# ============================================================
+# PASO 1: Script SQL para configurar permisos base
+# ============================================================
+"""
+-- Ejecuta esto en tu base de datos MySQL
+
+-- 1. Crear permisos básicos de solicitudes si no existen
+INSERT IGNORE INTO Permiso (Id_modulo, Id_accion, Codigo, Descripcion, Activo)
+SELECT 
+    (SELECT Id_modulo FROM Modulo WHERE LOWER(Nombre) = 'solicitudes' LIMIT 1),
+    1, 
+    'solicitudes.view',
+    'Ver solicitudes propias',
+    1
+WHERE NOT EXISTS (SELECT 1 FROM Permiso WHERE Codigo = 'solicitudes.view');
+
+INSERT IGNORE INTO Permiso (Id_modulo, Id_accion, Codigo, Descripcion, Activo)
+SELECT 
+    (SELECT Id_modulo FROM Modulo WHERE LOWER(Nombre) = 'solicitudes' LIMIT 1),
+    2, 
+    'solicitudes.create',
+    'Crear nuevas solicitudes',
+    1
+WHERE NOT EXISTS (SELECT 1 FROM Permiso WHERE Codigo = 'solicitudes.create');
+
+INSERT IGNORE INTO Permiso (Id_modulo, Id_accion, Codigo, Descripcion, Activo)
+SELECT 
+    (SELECT Id_modulo FROM Modulo WHERE LOWER(Nombre) = 'solicitudes' LIMIT 1),
+    3, 
+    'solicitudes.update',
+    'Editar solicitudes propias',
+    1
+WHERE NOT EXISTS (SELECT 1 FROM Permiso WHERE Codigo = 'solicitudes.update');
+
+INSERT IGNORE INTO Permiso (Id_modulo, Id_accion, Codigo, Descripcion, Activo)
+SELECT 
+    (SELECT Id_modulo FROM Modulo WHERE LOWER(Nombre) = 'solicitudes' LIMIT 1),
+    4, 
+    'solicitudes.delete',
+    'Eliminar solicitudes propias',
+    1
+WHERE NOT EXISTS (SELECT 1 FROM Permiso WHERE Codigo = 'solicitudes.delete');
+
+-- 2. Asignar permisos al rol INVITADO (o CLIENTE)
+-- Encuentra el ID del rol
+SET @rol_invitado = (SELECT ID_Rol FROM Roles WHERE LOWER(Nombre) IN ('invitado', 'cliente') LIMIT 1);
+
+-- Asignar permisos
+INSERT IGNORE INTO Rol_Permiso (Id_Rol, Id_Permiso, Otorgado)
+SELECT @rol_invitado, Id_permiso, 1
+FROM Permiso 
+WHERE Codigo IN ('solicitudes.view', 'solicitudes.create', 'solicitudes.update', 'solicitudes.delete')
+AND @rol_invitado IS NOT NULL;
+
+-- 3. Verificar
+SELECT 
+    r.Nombre as Rol,
+    p.Codigo as Permiso,
+    p.Descripcion,
+    rp.Otorgado
+FROM Roles r
+JOIN Rol_Permiso rp ON r.ID_Rol = rp.Id_Rol
+JOIN Permiso p ON rp.Id_Permiso = p.Id_permiso
+WHERE LOWER(r.Nombre) IN ('invitado', 'cliente')
+ORDER BY r.Nombre, p.Codigo;
+"""
+
+# ============================================================
+# PASO 2: Modificar solicitudes.py para validar por permisos
+# ============================================================
+
+# Reemplaza app/api/routers/solicitudes.py con esto:
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
@@ -12,7 +84,9 @@ from app.db.models.user import User
 from app.schemas.solicitudes import SolicitudCreate, SolicitudUpdate, SolicitudOut
 from app.core.security import get_current_user
 from app.utils.auditoria import registrar_auditoria
-from app.utils.roles import usuario_tiene_algun_rol
+
+# ============= NUEVO: Importar validación de permisos =============
+from app.deps.perm import perm
 
 router = APIRouter(tags=["Solicitudes"])
 
@@ -34,17 +108,23 @@ async def _get_estado_solicitud_by_name(db: AsyncSession, nombre: str) -> Estado
     ).scalar_one_or_none()
 
 def _to_std_estado_nombre(estado: EstadoSolicitud | None) -> str:
-    return (estado.Nombre if estado else "" ).lower()
+    return (estado.Nombre if estado else "").lower()
 
 # -----------------
-# CREATE
+# CREATE - AHORA CON PERMISOS
 # -----------------
-@router.post("", response_model=SolicitudOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=SolicitudOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(perm("solicitudes.create"))]  # ✅ Valida permiso
+)
 async def crear_solicitud(
     payload: SolicitudCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Cualquier usuario con permiso 'solicitudes.create' puede crear"""
     metodo = (payload.metodo_entrega or "").lower()
     if metodo not in {"domicilio", "oficina"}:
         raise HTTPException(status_code=400, detail="Método de entrega inválido (domicilio | oficina)")
@@ -84,13 +164,18 @@ async def crear_solicitud(
     )
 
 # -----------------
-# READ (mis)
+# READ (mis solicitudes) - CON PERMISOS
 # -----------------
-@router.get("/mis", response_model=list[SolicitudOut])
+@router.get(
+    "/mis",
+    response_model=list[SolicitudOut],
+    dependencies=[Depends(perm("solicitudes.view"))]  # ✅ Valida permiso
+)
 async def listar_mis_solicitudes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Usuario solo ve sus propias solicitudes"""
     result = await db.execute(
         select(Solicitud)
         .options(selectinload(Solicitud.estado))
@@ -108,14 +193,19 @@ async def listar_mis_solicitudes(
     ]
 
 # -----------------
-# READ (detalle)
+# READ (detalle) - CON PERMISOS
 # -----------------
-@router.get("/{id_solicitud}", response_model=SolicitudOut)
+@router.get(
+    "/{id_solicitud}",
+    response_model=SolicitudOut,
+    dependencies=[Depends(perm("solicitudes.view"))]  # ✅ Valida permiso
+)
 async def obtener_solicitud(
     id_solicitud: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Usuario solo puede ver sus propias solicitudes"""
     result = await db.execute(
         select(Solicitud).options(selectinload(Solicitud.estado)).where(Solicitud.id_solicitud == id_solicitud)
     )
@@ -130,15 +220,20 @@ async def obtener_solicitud(
     )
 
 # -----------------
-# UPDATE
+# UPDATE - CON PERMISOS
 # -----------------
-@router.put("/{id_solicitud}", response_model=SolicitudOut)
+@router.put(
+    "/{id_solicitud}",
+    response_model=SolicitudOut,
+    dependencies=[Depends(perm("solicitudes.update"))]  # ✅ Valida permiso
+)
 async def actualizar_solicitud(
     id_solicitud: int,
     payload: SolicitudUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Usuario solo puede editar sus propias solicitudes"""
     result = await db.execute(
         select(Solicitud).options(selectinload(Solicitud.estado)).where(
             Solicitud.id_solicitud == id_solicitud, Solicitud.id_usuario == current_user.ID_Usuario
@@ -178,14 +273,19 @@ async def actualizar_solicitud(
     )
 
 # -----------------
-# DELETE
+# DELETE - CON PERMISOS
 # -----------------
-@router.delete("/{id_solicitud}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{id_solicitud}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(perm("solicitudes.delete"))]  # ✅ Valida permiso
+)
 async def eliminar_solicitud(
     id_solicitud: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Usuario solo puede eliminar sus propias solicitudes"""
     result = await db.execute(
         select(Solicitud).where(Solicitud.id_solicitud == id_solicitud, Solicitud.id_usuario == current_user.ID_Usuario)
     )
@@ -207,19 +307,20 @@ async def eliminar_solicitud(
     return None
 
 # -----------------
-# PATCH estado (flujo regularizado)
+# PATCH estado (solo admin/operadores) - CON PERMISOS
 # -----------------
-@router.patch("/{id_solicitud}/estado/{nuevo}", response_model=SolicitudOut)
+@router.patch(
+    "/{id_solicitud}/estado/{nuevo}",
+    response_model=SolicitudOut,
+    dependencies=[Depends(perm("solicitudes.cambiar_estado"))]  # ✅ Nuevo permiso
+)
 async def cambiar_estado(
     id_solicitud: int,
     nuevo: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Permisos (operativos)
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMIN", "OPERADOR", "VALUADOR"]):
-        raise HTTPException(status_code=403, detail="Sin permiso")
-
+    """Solo usuarios con permiso especial pueden cambiar estados"""
     # Normalizar y validar destino
     nuevo_std = (nuevo or "").lower()
     if nuevo_std not in ESTADOS_SOLICITUD_VALIDOS:
@@ -260,3 +361,61 @@ async def cambiar_estado(
         metodo_entrega=s.metodo_entrega,
         direccion_entrega=s.direccion_entrega,
     )
+
+
+# ============================================================
+# PASO 3: Guía para el Frontend
+# ============================================================
+"""
+IMPLEMENTACIÓN EN FRONTEND (React/Vue/Angular)
+
+1. Al hacer login, llama a GET /usuarios/me/permisos
+   
+   fetch('/usuarios/me/permisos', {
+     headers: { 'Authorization': 'Bearer ' + token }
+   })
+   .then(r => r.json())
+   .then(data => {
+     // data.permisos = ["solicitudes.view", "solicitudes.create", ...]
+     localStorage.setItem('permisos', JSON.stringify(data.permisos))
+   })
+
+2. Crea un helper para validar permisos:
+
+   function tienePermiso(permiso) {
+     const permisos = JSON.parse(localStorage.getItem('permisos') || '[]')
+     return permisos.includes(permiso.toLowerCase())
+   }
+
+3. Usa en componentes:
+
+   // Mostrar botón solo si tiene permiso
+   {tienePermiso('solicitudes.create') && (
+     <button onClick={crearSolicitud}>Nueva Solicitud</button>
+   )}
+
+   // Proteger rutas
+   const ProtectedRoute = ({ permiso, children }) => {
+     if (!tienePermiso(permiso)) {
+       return <Navigate to="/sin-acceso" />
+     }
+     return children
+   }
+
+4. Ejemplo completo:
+
+   <Route path="/solicitudes">
+     <Route index element={
+       <ProtectedRoute permiso="solicitudes.view">
+         <ListaSolicitudes />
+       </ProtectedRoute>
+     } />
+     <Route path="nueva" element={
+       <ProtectedRoute permiso="solicitudes.create">
+         <NuevaSolicitud />
+       </ProtectedRoute>
+     } />
+   </Route>
+
+5. IMPORTANTE: El backend SIEMPRE valida. El frontend solo oculta/muestra.
+"""
