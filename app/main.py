@@ -36,14 +36,13 @@ from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
 from app.api.routers.usuarios_permisos import router as usuarios_permisos_router
 
-# Préstamos (recálculo / estado)
+# Préstamos (recálculo / estado / listado / activar)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
-
-# Listado de préstamos (nuevo)
-from app.api.routers.prestamos_listado import router as prestamos_listado_router
+from app.api.routers.prestamos_activar import router as prestamos_activar_router       # NUEVO
+from app.api.routers.prestamos_listado import router as prestamos_listado_router       # NUEVO
 
 # RBAC
 from app.rbac.attach import attach_rbac_guards
@@ -59,7 +58,7 @@ from app.api.routers.contratos import router_prestamos, router_contratos
 # Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
 
-# Auditoría (nuevo)
+# Auditoría
 from app.api.routers.auditoria import router as auditoria_router
 
 # Seguridad (opcional; puede no existir en algunos entornos)
@@ -159,9 +158,8 @@ app.include_router(prestamos_recalcular_router)        # individual
 app.include_router(prestamos_recalcular_bulk_router)   # bulk
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
-
-# Préstamos (listado)
-app.include_router(prestamos_listado_router)
+app.include_router(prestamos_activar_router)           # activar préstamo
+app.include_router(prestamos_listado_router)           # listado de préstamos
 
 # Inventario y ACL Admin + Admin Usuarios
 attach_rbac_guards(app)
@@ -225,4 +223,3 @@ try:
 except Exception:
     # Evita romper el arranque si el print falla en algunos entornos
     pass
-
