@@ -42,6 +42,9 @@ from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalc
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
 
+# Listado de préstamos (nuevo)
+from app.api.routers.prestamos_listado import router as prestamos_listado_router
+
 # RBAC
 from app.rbac.attach import attach_rbac_guards
 
@@ -156,6 +159,9 @@ app.include_router(prestamos_recalcular_router)        # individual
 app.include_router(prestamos_recalcular_bulk_router)   # bulk
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
+
+# Préstamos (listado)
+app.include_router(prestamos_listado_router)
 
 # Inventario y ACL Admin + Admin Usuarios
 attach_rbac_guards(app)
