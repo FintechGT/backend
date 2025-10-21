@@ -15,7 +15,7 @@ from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
-from app.api.routers.crear_pagos import router as crear_pagos_router  # nuevo
+from app.api.routers.crear_pagos import router as crear_pagos_router  # POST /pagos
 
 # Solicitudes + artículos (agregar/obtener fotos y artículos)
 from app.api.routers import solicitudes_articulos  # módulo que expone .router
@@ -50,17 +50,30 @@ from app.api.routers import inventario_venta
 from app.api.routers import acl_admin
 from app.api.routers import admin_usuarios
 
+# Contratos / Préstamos
 from app.api.routers.contratos import router_prestamos, router_contratos
+
+# Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
 
-# Auditoría (nuevo, del branch feature/auditoria)
+# Auditoría (de feature/auditoria)
 from app.api.routers.auditoria import router as auditoria_router
 
-# Seguridad (opcional, del branch develop)
+# Seguridad (opcional, puede no existir en algunos entornos)
 try:
     from app.api.routers.seguridad import router as seguridad_router
 except Exception:
     seguridad_router = None
+
+# Test de reglas (opcional, presente en algunas ramas)
+try:
+    from app.api.routers.test_regla import router as test_regla_router
+except Exception:
+    test_regla_router = None
+
+# Reglas por Tipo de Artículo
+from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
+
 
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
@@ -70,6 +83,7 @@ def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
+
 
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 
@@ -173,8 +187,11 @@ except Exception:
     pass
 
 # Reglas por Tipo de Artículo
-from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
 app.include_router(regla_tipo_articulo_router)
+
+# Test de reglas (opcional)
+if test_regla_router:
+    app.include_router(test_regla_router)
 
 # --------------------------------------------------------------------------------------
 # Utilidades de diagnóstico (opcional)
