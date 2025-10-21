@@ -15,7 +15,7 @@ from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
-from app.api.routers.crear_pagos import router as crear_pagos_router  # <-- nuevo
+from app.api.routers.crear_pagos import router as crear_pagos_router  # POST /pagos
 
 # Solicitudes + artículos (agregar/obtener fotos y artículos)
 from app.api.routers import solicitudes_articulos  # módulo que expone .router
@@ -50,15 +50,31 @@ from app.api.routers import inventario_venta
 from app.api.routers import acl_admin
 from app.api.routers import admin_usuarios
 
+# Contratos / Préstamos
 from app.api.routers.contratos import router_prestamos, router_contratos
+
+# Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
+
+# Auditoría (de feature/auditoria)
 from app.api.routers.auditoria import router as auditoria_router
-# --- Resolución de conflicto: importar seguridad si existe ---
+
+# Seguridad (opcional, puede no existir en algunos entornos)
 try:
     from app.api.routers.seguridad import router as seguridad_router
 except Exception:
     seguridad_router = None
-from app.api.routers.test_regla import router as test_regla_router
+
+# Test de reglas (opcional, presente en algunas ramas)
+try:
+    from app.api.routers.test_regla import router as test_regla_router
+except Exception:
+    test_regla_router = None
+
+# Reglas por Tipo de Artículo
+from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
+
+
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -67,6 +83,7 @@ def parse_origins(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
+
 
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 
@@ -120,7 +137,7 @@ app.include_router(cloudinary_router)
 # Pagos
 app.include_router(pagos_list_router)       # GET  /prestamos/{id_prestamo}/pagos
 app.include_router(pagos_validar_router)    # POST /pagos/{id_pago}/validar
-app.include_router(crear_pagos_router)      # POST /pagos (o lo que definas)
+app.include_router(crear_pagos_router)      # POST /pagos
 
 # Artículos (valuación y rechazo)
 app.include_router(articulos_valuador_router)
@@ -148,11 +165,16 @@ app.include_router(inventario_venta.router)
 app.include_router(acl_admin.router)
 app.include_router(admin_usuarios.router)
 
+# Contratos / Préstamos
 app.include_router(router_prestamos)
 app.include_router(router_contratos)
-app.include_router(test_regla_router)
-app.include_router(admin_solicitudes_router)
+
+# Auditoría
 app.include_router(auditoria_router)
+
+# Admin solicitudes
+app.include_router(admin_solicitudes_router)
+
 # Usuarios (si existe el router)
 if seguridad_router:
     app.include_router(seguridad_router)
@@ -165,8 +187,11 @@ except Exception:
     pass
 
 # Reglas por Tipo de Artículo
-from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
 app.include_router(regla_tipo_articulo_router)
+
+# Test de reglas (opcional)
+if test_regla_router:
+    app.include_router(test_regla_router)
 
 # --------------------------------------------------------------------------------------
 # Utilidades de diagnóstico (opcional)
@@ -189,4 +214,9 @@ def root():
 # --------------------------------------------------------------------------------------
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
-print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+try:
+    rutas = [r.path for r in app.routes if isinstance(r, APIRoute)]
+    print("RUTAS REGISTRADAS:", rutas)
+except Exception:
+    # Evita romper el arranque si el print falla en algunos entornos
+    pass
