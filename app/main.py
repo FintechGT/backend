@@ -52,13 +52,13 @@ from app.api.routers import admin_usuarios
 
 from app.api.routers.contratos import router_prestamos, router_contratos
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
-
+from app.api.routers.auditoria import router as auditoria_router
 # --- Resolución de conflicto: importar seguridad si existe ---
 try:
     from app.api.routers.seguridad import router as seguridad_router
 except Exception:
     seguridad_router = None
-
+from app.api.routers.test_regla import router as test_regla_router
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
 # --------------------------------------------------------------------------------------
@@ -150,9 +150,9 @@ app.include_router(admin_usuarios.router)
 
 app.include_router(router_prestamos)
 app.include_router(router_contratos)
-
+app.include_router(test_regla_router)
 app.include_router(admin_solicitudes_router)
-
+app.include_router(auditoria_router)
 # Usuarios (si existe el router)
 if seguridad_router:
     app.include_router(seguridad_router)
