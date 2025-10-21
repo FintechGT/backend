@@ -18,7 +18,7 @@ from app.api.routers.catalogos import router as catalogos_router
 from app.api.routers.crear_pagos import router as crear_pagos_router  # POST /pagos
 
 # Solicitudes + artículos (agregar/obtener fotos y artículos)
-from app.api.routers import solicitudes_articulos  # módulo que expone .router
+from app.api.routers import solicitudes_articulos  # expone .router
 
 # Valuador / pagos
 from app.api.routers.articulos_valuador import router as articulos_valuador_router
@@ -56,16 +56,16 @@ from app.api.routers.contratos import router_prestamos, router_contratos
 # Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
 
-# Auditoría (de feature/auditoria)
+# Auditoría (nuevo)
 from app.api.routers.auditoria import router as auditoria_router
 
-# Seguridad (opcional, puede no existir en algunos entornos)
+# Seguridad (opcional; puede no existir en algunos entornos)
 try:
     from app.api.routers.seguridad import router as seguridad_router
 except Exception:
     seguridad_router = None
 
-# Test de reglas (opcional, presente en algunas ramas)
+# Test de reglas (opcional)
 try:
     from app.api.routers.test_regla import router as test_regla_router
 except Exception:
@@ -151,11 +151,9 @@ app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
 app.include_router(usuarios_permisos_router)
 
-# Préstamos (recálculo)
+# Préstamos (recálculo / procesos)
 app.include_router(prestamos_recalcular_router)        # individual
 app.include_router(prestamos_recalcular_bulk_router)   # bulk
-
-# Préstamos (evaluación de estado / procesos)
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
 
@@ -175,10 +173,11 @@ app.include_router(auditoria_router)
 # Admin solicitudes
 app.include_router(admin_solicitudes_router)
 
-# Usuarios (si existe el router)
+# Seguridad (si existe)
 if seguridad_router:
     app.include_router(seguridad_router)
 
+# Usuarios (si existe el router)
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
@@ -220,3 +219,4 @@ try:
 except Exception:
     # Evita romper el arranque si el print falla en algunos entornos
     pass
+
