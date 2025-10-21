@@ -158,6 +158,11 @@ except Exception:
 from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
 app.include_router(regla_tipo_articulo_router)
 
+#LITADO DE PRESTAMOS
+from app.api.routers.prestamos_listado import router as prestamos_listado_router
+app.include_router(prestamos_listado_router)
+
+
 # --------------------------------------------------------------------------------------
 # Utilidades de diagnóstico (opcional)
 # --------------------------------------------------------------------------------------
