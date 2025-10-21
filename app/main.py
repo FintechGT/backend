@@ -15,7 +15,7 @@ from app.api.routers.cloudinary_sign import router as cloudinary_router
 from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
 from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
-from app.api.routers.crear_pagos import router as crear_pagos_router  # <-- nuevo
+from app.api.routers.crear_pagos import router as crear_pagos_router  # nuevo
 
 # Solicitudes + artículos (agregar/obtener fotos y artículos)
 from app.api.routers import solicitudes_articulos  # módulo que expone .router
@@ -53,8 +53,14 @@ from app.api.routers import admin_usuarios
 from app.api.routers.contratos import router_prestamos, router_contratos
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
 
-#Auditoria
+# Auditoría (nuevo, del branch feature/auditoria)
 from app.api.routers.auditoria import router as auditoria_router
+
+# Seguridad (opcional, del branch develop)
+try:
+    from app.api.routers.seguridad import router as seguridad_router
+except Exception:
+    seguridad_router = None
 
 # --------------------------------------------------------------------------------------
 # Utilidad interna: parseo de orígenes CORS
@@ -117,7 +123,7 @@ app.include_router(cloudinary_router)
 # Pagos
 app.include_router(pagos_list_router)       # GET  /prestamos/{id_prestamo}/pagos
 app.include_router(pagos_validar_router)    # POST /pagos/{id_pago}/validar
-app.include_router(crear_pagos_router)      # POST /pagos (o lo que definas)
+app.include_router(crear_pagos_router)      # POST /pagos
 
 # Artículos (valuación y rechazo)
 app.include_router(articulos_valuador_router)
@@ -145,14 +151,20 @@ app.include_router(inventario_venta.router)
 app.include_router(acl_admin.router)
 app.include_router(admin_usuarios.router)
 
-app.include_router(router_prestamos)  
-app.include_router(router_contratos) 
+# Contratos / Préstamos
+app.include_router(router_prestamos)
+app.include_router(router_contratos)
 
-#Auditoria
+# Auditoría
 app.include_router(auditoria_router)
 
+# Admin solicitudes
 app.include_router(admin_solicitudes_router)
+
 # Usuarios (si existe el router)
+if seguridad_router:
+    app.include_router(seguridad_router)
+
 try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
@@ -185,4 +197,9 @@ def root():
 # --------------------------------------------------------------------------------------
 # Log de rutas registradas (útil en desarrollo)
 # --------------------------------------------------------------------------------------
-print("RUTAS REGISTRADAS:", [r.path for r in app.routes if isinstance(r, APIRoute)])
+try:
+    rutas = [r.path for r in app.routes if isinstance(r, APIRoute)]
+    print("RUTAS REGISTRADAS:", rutas)
+except Exception:
+    # Evita romper el arranque si el print falla en algunos entornos
+    pass
