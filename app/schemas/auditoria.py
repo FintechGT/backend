@@ -1,4 +1,3 @@
-# app/schemas/auditoria.py
 from pydantic import BaseModel, Field
 from typing import Any, Optional, List, Dict
 from datetime import datetime
@@ -25,4 +24,4 @@ class AuditoriaListOut(BaseModel):
     sort: str = Field(default="-fecha_hora")
 
     class Config:
-        from_attributes = True  # Pydantic v1; para v2 usa: model_config = {"from_attributes": True}
+        from_attributes = True

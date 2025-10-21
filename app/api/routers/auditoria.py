@@ -1,24 +1,18 @@
-# app/api/routers/auditoria.py
+# SOLO APIRouter aquí (no crear FastAPI)
 from typing import Any, Dict, Optional, List
 from datetime import datetime, date, time, timezone
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func, and_, or_, cast, String, Text
+from sqlalchemy import select, func, and_, or_, cast, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Session / Auth de TU proyecto
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
-
-# Modelos exactos
 from app.db.models.auditoria import Auditoria
 from app.db.models.user import User
-
-# Schemas
 from app.schemas.auditoria import AuditoriaListOut, AuditoriaItem, UsuarioMini
 
-# ⚠️ Nombre debe ser EXACTAMENTE "router"
 router = APIRouter(prefix="/auditoria", tags=["Auditoría"])
 
 # ---------------- Helpers ----------------
@@ -66,21 +60,17 @@ def _to_json(val):
     except Exception:
         return None
 
-# ---------------- Endpoints ----------------
-
-# Ping de diagnóstico (puedes borrar luego)
-@router.get("/ping", include_in_schema=True)
-async def auditoria_ping():
-    return {"ok": True, "router": "auditoria"}
-
-@router.get("/", response_model=AuditoriaListOut, include_in_schema=True, status_code=status.HTTP_200_OK)
+# ---------------- Endpoint requerido ----------------
+# Registramos ambas rutas; solo /auditoria aparece en /docs.
+@router.get("", response_model=AuditoriaListOut, include_in_schema=True, status_code=status.HTTP_200_OK)
+@router.get("/", response_model=AuditoriaListOut, include_in_schema=False, status_code=status.HTTP_200_OK)
 async def listar_auditoria(
     user_id: Optional[int] = Query(None, ge=1),
     modulo: Optional[str] = Query(None),
     accion: Optional[str] = Query(None),
     desde: Optional[str] = Query(None, description="YYYY-MM-DD o ISO-8601 (UTC)"),
     hasta: Optional[str] = Query(None, description="YYYY-MM-DD o ISO-8601 (UTC, inclusivo)"),
-    q: Optional[str] = Query(None, description="Búsqueda libre en detalle/JSON"),
+    q: Optional[str] = Query(None, description="Búsqueda libre en detalle y JSON"),
     sort: str = Query("-fecha_hora", description="fecha_hora|modulo|accion; prefijo - para DESC"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -88,13 +78,11 @@ async def listar_auditoria(
     db: AsyncSession = Depends(get_db),
     current_user: Any = Depends(get_current_user),
 ):
-    # permisos básicos (deja abierto para probar; si tienes guard de roles, colócalo aquí)
-    _ = _get_user_id(current_user)
+    _ = _get_user_id(current_user)  # mantiene requerimiento de usuario autenticado
 
     dt_desde = _parse_iso_any(desde, end_of_day=False)
     dt_hasta = _parse_iso_any(hasta, end_of_day=True)
 
-    # SELECT base
     base = select(
         Auditoria.id_auditoria,
         Auditoria.id_usuario,
@@ -106,7 +94,6 @@ async def listar_auditoria(
         Auditoria.new_values,
     )
 
-    # Condiciones
     conds = []
     if user_id is not None:
         conds.append(Auditoria.id_usuario == user_id)
@@ -120,7 +107,6 @@ async def listar_auditoria(
         conds.append(Auditoria.fecha_hora <= dt_hasta)
     if q:
         like = f"%{q}%"
-        # cast a TEXT/String para Postgres/SQLA versiones diversas
         conds.append(
             or_(
                 Auditoria.detalle.ilike(like),
@@ -131,10 +117,8 @@ async def listar_auditoria(
     if conds:
         base = base.where(and_(*conds))
 
-    # Total
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
 
-    # Sort
     key = "fecha_hora"
     desc = True
     if sort:
@@ -150,7 +134,6 @@ async def listar_auditoria(
     query = base.order_by(col.desc() if desc else col.asc()).limit(limit).offset(offset)
     rows = (await db.execute(query)).all()
 
-    # JOIN liviano opcional para nombre de usuario
     nombres_por_usuario: Dict[int, str] = {}
     if include_user:
         ids = {r.id_usuario for r in rows if r.id_usuario is not None}
@@ -170,7 +153,7 @@ async def listar_auditoria(
                 usuario=usuario,
                 modulo=r.modulo,
                 accion=r.accion,
-                fecha_hora=r.fecha_hora,  # asume UTC en BD
+                fecha_hora=r.fecha_hora,
                 detalle=r.detalle,
                 old_values=_to_json(r.old_values),
                 new_values=_to_json(r.new_values),
