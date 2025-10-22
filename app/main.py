@@ -94,6 +94,7 @@ fallback = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://frontend-web-rust-nine.vercel.app",
+     "http://10.144.119.56:3000",
 ]
 for o in fallback:
     if o not in origins:
