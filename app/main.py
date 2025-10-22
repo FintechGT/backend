@@ -54,6 +54,7 @@ from app.api.routers import admin_usuarios
 
 # Contratos / Préstamos
 from app.api.routers.contratos import router_prestamos, router_contratos
+from app.api.routers.contratos_get import router as router_contratos_get
 
 # Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
@@ -171,7 +172,7 @@ app.include_router(admin_usuarios.router)
 # Contratos / Préstamos
 app.include_router(router_prestamos)
 app.include_router(router_contratos)
-
+app.include_router(router_contratos_get)
 # Auditoría
 app.include_router(auditoria_router)
 
