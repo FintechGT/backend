@@ -1,5 +1,5 @@
 # ============================================================
-# app/api/routers/contratos.py
+# app/api/routers/contratos.py  (UNIFICADO)
 # ============================================================
 from __future__ import annotations
 
@@ -31,14 +31,11 @@ from app.db.models.user import User
 from app.utils.auditoria import registrar_auditoria
 from app.utils.roles import usuario_tiene_algun_rol
 
-# Cloudinary
+# --------- Cloudinary ----------
 import cloudinary
 import cloudinary.uploader
 from cloudinary.exceptions import Error as CloudinaryError
 
-# ============================================================
-# CLOUDINARY (lee variables de entorno)
-# ============================================================
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -46,17 +43,13 @@ cloudinary.config(
     secure=True,
 )
 
-# ------------------------------------------------------------
-# Helper: subir con preset si existe; si falla, reintentar firmado
-# ------------------------------------------------------------
 def _cld_upload_with_preset_fallback(file_or_bytes, **options):
     """
     1) Si CLOUDINARY_UPLOAD_PRESET existe -> intenta unsigned con preset.
-    2) Si falla -> intenta firmado SIN preset limpiando env y config interna.
+    2) Si falla -> intenta firmado sin preset.
     """
     preset = os.getenv("CLOUDINARY_UPLOAD_PRESET")
 
-    # 1) unsigned con preset
     if preset:
         try:
             return cloudinary.uploader.upload(
@@ -66,9 +59,8 @@ def _cld_upload_with_preset_fallback(file_or_bytes, **options):
                 **options,
             )
         except CloudinaryError as e:
-            print(f"[Cloudinary] unsigned con preset '{preset}' falló: {e}. Reintentando firmado...")
+            print(f"[Cloudinary] unsigned '{preset}' falló: {e}. Reintentando firmado...")
 
-    # 2) firmado sin preset
     prev_env = os.environ.get("CLOUDINARY_UPLOAD_PRESET", None)
     cfg_before = cloudinary.config()
     try:
@@ -89,9 +81,7 @@ def _cld_upload_with_preset_fallback(file_or_bytes, **options):
             upload_preset=getattr(cfg_before, "upload_preset", None),
         )
 
-# ============================================================
-# PDF BACKEND (WeasyPrint -> ReportLab -> Mínimo)
-# ============================================================
+# --------- PDF backends ----------
 _PDF_BACKEND = "none"
 
 def _pdf_bytes_from_html(html_str: str) -> bytes:
@@ -133,7 +123,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     except Exception:
         pass
 
-    # C) Mínimo
+    # C) mínimo
     content = "Contrato\n\n" + re.sub(r"<[^>]+>", "", html_str)
     safe = content[:1500].replace("(", r"\(").replace(")", r"\)")
     text_stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET"
@@ -162,9 +152,7 @@ startxref
     _PDF_BACKEND = "minimal"
     return pdf.encode("latin-1", errors="ignore")
 
-# ============================================================
-# pyHanko opcional (firma X.509)
-# ============================================================
+# --------- Firma X.509 opcional ----------
 _USE_PYHANKO = False
 try:
     from pyhanko.sign import signers
@@ -173,9 +161,7 @@ try:
 except Exception:
     _USE_PYHANKO = False
 
-# ============================================================
-# Helpers
-# ============================================================
+# --------- Helpers de auth/rol ----------
 def _resolve_user_id(u: User) -> int:
     for attr in ("ID_Usuario", "id_usuario", "id"):
         val = getattr(u, attr, None)
@@ -190,9 +176,7 @@ def _ensure_id_usuario_attr(u: User) -> None:
 async def _es_admin_valuador(user: User, db: AsyncSession) -> bool:
     return await usuario_tiene_algun_rol(user, db, ["ADMINISTRADOR", "VALUADOR"])
 
-# ============================================================
-# Routers
-# ============================================================
+# --------- Routers ---------
 router_prestamos = APIRouter(prefix="/prestamos", tags=["Contratos"])
 router_contratos = APIRouter(prefix="/contratos", tags=["Contratos"])
 
@@ -254,7 +238,7 @@ async def generar_contrato(
       </head>
       <body>
         <h1>Contrato de Préstamo #{id_prestamo}</h1>
-        <p>Este contrato se celebra entre la empresa y el cliente registrado en el sistema Pignoraticios.</p>
+        <p>Este contrato se celebra entre la empresa y el cliente registrado.</p>
         <table>
           <tr><th>Artículo</th><td>{getattr(articulo, "descripcion", "N/A")}</td></tr>
           <tr><th>Monto del préstamo</th><td>Q {float(prestamo.monto_prestamo):,.2f}</td></tr>
@@ -318,7 +302,7 @@ async def generar_contrato(
     }
 
 # ============================================================
-# 2) Registrar firma "dibujada" (imagen base64)
+# 2) Registrar firma "dibujada" (cliente/empresa)
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar",
@@ -421,7 +405,7 @@ async def firmar_contrato(
     }
 
 # ============================================================
-# 3) Firma CRIPTOGRÁFICA X.509 del PDF (pyHanko) - opcional
+# 3) Firma CRIPTOGRÁFICA X.509 del PDF (opcional)
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar-cripto",
@@ -533,35 +517,25 @@ async def contratos_selftest():
     }
 
 # ============================================================
-# 5) Listar contratos con filtros (rol-aware)
+# 5) Listar contratos (rol-aware) — con y sin slash
 # ============================================================
-@router_contratos.get(
-    "",
-    summary="Listar contratos visibles según rol con filtros",
-    status_code=status.HTTP_200_OK,
-)
-async def listar_contratos(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    # --- filtros ---
-    q: Optional[str] = Query(None, description="Busca en descripción de artículo o por ids"),
-    usuario_id: Optional[int] = Query(None, description="Filtra por dueño (solo admin/valuador)"),
-    prestamo_id: Optional[int] = Query(None),
-    estado_firma: Optional[str] = Query(
-        None, pattern="^(pendiente|parcial|completo)$",
-        description="pendiente | parcial | completo"
-    ),
-    fecha_desde: Optional[date] = Query(None, description="YYYY-MM-DD (created_at)"),
-    fecha_hasta: Optional[date] = Query(None, description="YYYY-MM-DD (created_at)"),
-    orden: str = Query("reciente", pattern="^(reciente|antiguo)$"),
-    limit: int = Query(20, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+async def _listar_contratos_impl(
+    db: AsyncSession,
+    current_user: User,
+    q: Optional[str],
+    usuario_id: Optional[int],
+    prestamo_id: Optional[int],
+    estado_firma: Optional[str],
+    fecha_desde: Optional[date],
+    fecha_hasta: Optional[date],
+    orden: str,
+    limit: int,
+    offset: int,
 ):
     uid = _resolve_user_id(current_user)
     _ensure_id_usuario_attr(current_user)
     es_admin = await _es_admin_valuador(current_user, db)
 
-    # Base JOIN
     base = (
         select(
             Contrato.id_contrato,
@@ -583,18 +557,15 @@ async def listar_contratos(
         .join(Solicitud, Solicitud.id_solicitud == Articulo.id_solicitud)
     )
 
-    # Visibilidad por rol
     conds = []
     if not es_admin:
         conds.append(Solicitud.id_usuario == uid)
 
-    # Filtros
     if prestamo_id is not None:
         conds.append(Prestamo.id_prestamo == prestamo_id)
 
     if q:
         q_like = f"%{q.strip()}%"
-        # permitir buscar por id_contrato / id_prestamo escrito en q
         try:
             q_num = int(q)
             conds.append(or_(
@@ -606,11 +577,10 @@ async def listar_contratos(
             conds.append(Articulo.descripcion.ilike(q_like))
 
     if usuario_id is not None:
-        if not es_admin:
-            # usuarios normales no pueden forzar usuario_id de otro
-            conds.append(Solicitud.id_usuario == uid)
-        else:
+        if es_admin:
             conds.append(Solicitud.id_usuario == usuario_id)
+        else:
+            conds.append(Solicitud.id_usuario == uid)
 
     if estado_firma:
         if estado_firma == "pendiente":
@@ -623,27 +593,17 @@ async def listar_contratos(
         elif estado_firma == "completo":
             conds.append(and_(Contrato.firma_cliente_en.is_not(None), Contrato.firma_empresa_en.is_not(None)))
 
-    # Rango de fechas: preferir Contrato.created_at si existe; fallback fecha_inicio
     fecha_campo = getattr(Contrato, "created_at", Prestamo.fecha_inicio)
     if fecha_desde:
         conds.append(fecha_campo >= datetime.combine(fecha_desde, datetime.min.time()))
     if fecha_hasta:
-        # incluir todo el día
         conds.append(fecha_campo < datetime.combine(fecha_hasta, datetime.max.time()))
 
     stmt = base.where(and_(*conds)) if conds else base
 
-    # Total
-    count_stmt = select(func.count()).select_from(stmt.subquery())
-    total = (await db.execute(count_stmt)).scalar_one()
-
-    # Orden
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     order_col = Contrato.id_contrato.desc() if orden == "reciente" else Contrato.id_contrato.asc()
-
-    # Paginación
-    stmt = stmt.order_by(order_col).limit(limit).offset(offset)
-
-    rows = (await db.execute(stmt)).all()
+    rows = (await db.execute(stmt.order_by(order_col).limit(limit).offset(offset))).all()
 
     items = []
     for r in rows:
@@ -665,22 +625,32 @@ async def listar_contratos(
             item["owner_id"] = r.owner_id
         items.append(item)
 
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "es_admin": es_admin,
-        "items": items,
-    }
+    return {"total": total, "limit": limit, "offset": offset, "es_admin": es_admin, "items": items}
+
+@router_contratos.get("", summary="Listar contratos visibles según rol con filtros")
+@router_contratos.get("/", include_in_schema=False)  # <- evita redirect 307/308
+async def listar_contratos(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    q: Optional[str] = Query(None, description="Busca en descripción de artículo o por ids"),
+    usuario_id: Optional[int] = Query(None, description="Filtra por dueño (solo admin/valuador)"),
+    prestamo_id: Optional[int] = Query(None),
+    estado_firma: Optional[str] = Query(None, pattern="^(pendiente|parcial|completo)$"),
+    fecha_desde: Optional[date] = Query(None, description="YYYY-MM-DD (created_at)"),
+    fecha_hasta: Optional[date] = Query(None, description="YYYY-MM-DD (created_at)"),
+    orden: str = Query("reciente", pattern="^(reciente|antiguo)$"),
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    return await _listar_contratos_impl(
+        db, current_user, q, usuario_id, prestamo_id,
+        estado_firma, fecha_desde, fecha_hasta, orden, limit, offset
+    )
 
 # ============================================================
 # 6) Mis contratos (solo dueño)
 # ============================================================
-@router_contratos.get(
-    "/mis",
-    summary="Listar mis contratos (usuario autenticado)",
-    status_code=status.HTTP_200_OK,
-)
+@router_contratos.get("/mis", summary="Listar mis contratos (usuario autenticado)")
 async def listar_mis_contratos(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -717,11 +687,7 @@ async def listar_mis_contratos(
 # ============================================================
 # 7) Detalle de contrato (dueño o ADMIN/VALUADOR)
 # ============================================================
-@router_contratos.get(
-    "/{id_contrato}",
-    summary="Detalle de contrato (dueño o ADMIN/VALUADOR)",
-    status_code=status.HTTP_200_OK,
-)
+@router_contratos.get("/{id_contrato}", summary="Detalle de contrato (dueño o ADMIN/VALUADOR)")
 async def obtener_contrato(
     id_contrato: int,
     db: AsyncSession = Depends(get_db),
