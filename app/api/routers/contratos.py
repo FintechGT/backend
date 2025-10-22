@@ -1,5 +1,5 @@
 # ============================================================
-# app/api/routers/contratos.py  (UNIFICADO)
+# app/api/routers/contratos.py — UNIFICADO
 # ============================================================
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ cloudinary.config(
     secure=True,
 )
 
+
 def _cld_upload_with_preset_fallback(file_or_bytes, **options):
     """
     1) Si CLOUDINARY_UPLOAD_PRESET existe -> intenta unsigned con preset.
@@ -81,11 +82,13 @@ def _cld_upload_with_preset_fallback(file_or_bytes, **options):
             upload_preset=getattr(cfg_before, "upload_preset", None),
         )
 
-# --------- PDF backends ----------
+
+# --------- PDF BACKENDS ----------
 _PDF_BACKEND = "none"
 
+
 def _pdf_bytes_from_html(html_str: str) -> bytes:
-    """Genera PDF bytes desde HTML con el mejor backend disponible."""
+    """Genera PDF desde HTML, probando WeasyPrint → ReportLab → fallback mínimo."""
     global _PDF_BACKEND
 
     # A) WeasyPrint
@@ -98,7 +101,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     except Exception:
         pass
 
-    # B) ReportLab
+    # B) ReportLab (fallback elegante)
     try:
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import LETTER
@@ -123,7 +126,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     except Exception:
         pass
 
-    # C) mínimo
+    # C) Mínimo válido PDF
     content = "Contrato\n\n" + re.sub(r"<[^>]+>", "", html_str)
     safe = content[:1500].replace("(", r"\(").replace(")", r"\)")
     text_stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET"
@@ -152,6 +155,7 @@ startxref
     _PDF_BACKEND = "minimal"
     return pdf.encode("latin-1", errors="ignore")
 
+
 # --------- Firma X.509 opcional ----------
 _USE_PYHANKO = False
 try:
@@ -161,6 +165,7 @@ try:
 except Exception:
     _USE_PYHANKO = False
 
+
 # --------- Helpers de auth/rol ----------
 def _resolve_user_id(u: User) -> int:
     for attr in ("ID_Usuario", "id_usuario", "id"):
@@ -169,28 +174,39 @@ def _resolve_user_id(u: User) -> int:
             return val
     raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario")
 
+
 def _ensure_id_usuario_attr(u: User) -> None:
     if not hasattr(u, "id_usuario"):
         setattr(u, "id_usuario", _resolve_user_id(u))
 
+
 async def _es_admin_valuador(user: User, db: AsyncSession) -> bool:
     return await usuario_tiene_algun_rol(user, db, ["ADMINISTRADOR", "VALUADOR"])
+
+
+def _ensure_data_url_png(b64_or_dataurl: str) -> str:
+    if not b64_or_dataurl:
+        return b64_or_dataurl
+    if b64_or_dataurl.startswith("data:image"):
+        return b64_or_dataurl
+    return "data:image/png;base64," + b64_or_dataurl
+
 
 # --------- Routers ---------
 router_prestamos = APIRouter(prefix="/prestamos", tags=["Contratos"])
 router_contratos = APIRouter(prefix="/contratos", tags=["Contratos"])
 
+
 # ============================================================
-# 1) Generar contrato PDF (ADMIN/VALUADOR)
+# 1) Generar contrato PDF
 # ============================================================
 @router_prestamos.post(
     "/{id_prestamo}/generar-contrato",
     status_code=status.HTTP_201_CREATED,
-    summary="Generar PDF del contrato y guardarlo en la tabla Contrato",
+    summary="Generar PDF del contrato para un préstamo aprobado",
 )
 async def generar_contrato(
     id_prestamo: int,
-    body: Optional[dict] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -200,9 +216,7 @@ async def generar_contrato(
     if not await _es_admin_valuador(current_user, db):
         raise HTTPException(status_code=403, detail="Solo ADMINISTRADOR o VALUADOR pueden generar contratos")
 
-    prestamo = (await db.execute(
-        select(Prestamo).where(Prestamo.id_prestamo == id_prestamo)
-    )).scalar_one_or_none()
+    prestamo = (await db.execute(select(Prestamo).where(Prestamo.id_prestamo == id_prestamo))).scalar_one_or_none()
     if not prestamo:
         raise HTTPException(status_code=404, detail="Préstamo no encontrado")
 
@@ -212,15 +226,11 @@ async def generar_contrato(
     if not estado or estado.nombre.lower() not in {"aprobado_pendiente_entrega", "activo"}:
         raise HTTPException(status_code=400, detail=f"Estado no válido para contrato (actual: {getattr(estado, 'nombre', 'N/A')})")
 
-    existente = (await db.execute(
-        select(Contrato).where(Contrato.id_prestamo == id_prestamo)
-    )).scalar_one_or_none()
+    existente = (await db.execute(select(Contrato).where(Contrato.id_prestamo == id_prestamo))).scalar_one_or_none()
     if existente:
         raise HTTPException(status_code=409, detail="Ya existe un contrato para este préstamo")
 
-    articulo = (await db.execute(
-        select(Articulo).where(Articulo.id_articulo == prestamo.id_articulo)
-    )).scalar_one_or_none()
+    articulo = (await db.execute(select(Articulo).where(Articulo.id_articulo == prestamo.id_articulo))).scalar_one_or_none()
 
     html = f"""
     <html>
@@ -245,23 +255,19 @@ async def generar_contrato(
           <tr><th>Fecha de inicio</th><td>{prestamo.fecha_inicio}</td></tr>
           <tr><th>Fecha de vencimiento</th><td>{prestamo.fecha_vencimiento}</td></tr>
         </table>
-        <p class="foot">Generado con backend: {_PDF_BACKEND}</p>
+        <p class="foot">Generado automáticamente por el sistema</p>
       </body>
     </html>
     """
 
-    try:
-        pdf_bytes = _pdf_bytes_from_html(html)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo generar el PDF: {e}")
-
+    pdf_bytes = _pdf_bytes_from_html(html)
     hash_doc = hashlib.sha256(pdf_bytes).hexdigest()
 
     upload_result = _cld_upload_with_preset_fallback(
         pdf_bytes,
         folder="contratos",
         public_id=f"contrato_{id_prestamo}",
-        resource_type="raw",  # PDF
+        resource_type="raw",
         overwrite=True,
         format="pdf",
     )
@@ -301,13 +307,13 @@ async def generar_contrato(
         "firma_empresa_en": contrato.firma_empresa_en,
     }
 
+
 # ============================================================
-# 2) Registrar firma "dibujada" (cliente/empresa)
+# 2) Firmar contrato (cliente/empresa)
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar",
-    summary="Registrar firma digital (cliente o empresa) con imagen base64",
-    status_code=status.HTTP_200_OK,
+    summary="Registrar firma digital (cliente o empresa)",
 )
 async def firmar_contrato(
     id_contrato: int,
@@ -339,7 +345,6 @@ async def firmar_contrato(
 
     contrato: Contrato = row[0]
     owner_id: int = row[1]
-
     es_admin_o_valuador = await _es_admin_valuador(current_user, db)
     es_duenio = owner_id == user_id
 
@@ -348,8 +353,10 @@ async def firmar_contrato(
     if firmante == "empresa" and not es_admin_o_valuador:
         raise HTTPException(status_code=403, detail="Solo ADMINISTRADOR o VALUADOR pueden firmar como empresa")
 
+    firma_data_url = _ensure_data_url_png(firma_digital)
+
     upload = _cld_upload_with_preset_fallback(
-        firma_digital,
+        firma_data_url,
         folder="contratos/firmas",
         public_id=f"firma_{id_contrato}_{firmante}",
         overwrite=True,
@@ -359,7 +366,7 @@ async def firmar_contrato(
             "id_contrato": str(id_contrato),
             "firmante": firmante,
             "ip": ip,
-            "pdf_hash": contrato.hash_doc,
+            "pdf_hash": contrato.hash_doc or "",
             "timestamp": datetime.utcnow().isoformat() + "Z",
         },
     )
@@ -404,13 +411,13 @@ async def firmar_contrato(
         "contrato_completado": contrato_completado,
     }
 
+
 # ============================================================
 # 3) Firma CRIPTOGRÁFICA X.509 del PDF (opcional)
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar-cripto",
     summary="Firmar criptográficamente el PDF del contrato con un certificado .p12/.pfx",
-    status_code=status.HTTP_200_OK,
 )
 async def firmar_cripto(
     id_contrato: int,
@@ -423,9 +430,7 @@ async def firmar_cripto(
     user_id = _resolve_user_id(current_user)
     _ensure_id_usuario_attr(current_user)
 
-    contrato = (await db.execute(
-        select(Contrato).where(Contrato.id_contrato == id_contrato)
-    )).scalar_one_or_none()
+    contrato = (await db.execute(select(Contrato).where(Contrato.id_contrato == id_contrato))).scalar_one_or_none()
     if not contrato:
         raise HTTPException(status_code=404, detail="Contrato no encontrado")
     if not contrato.url_pdf:
@@ -494,10 +499,11 @@ async def firmar_cripto(
         "firmado_cripto": True,
     }
 
+
 # ============================================================
-# 4) Self-test PDF + Cloudinary
+# 4) Self-test PDF + Cloudinary (puedes borrarlo en prod)
 # ============================================================
-@router_contratos.get("/_selftest", summary="Probar PDF + Cloudinary (puedes borrar este endpoint)")
+@router_contratos.get("/_selftest", summary="Probar PDF + Cloudinary")
 @router_contratos.get("/_selftest/", include_in_schema=False)
 async def contratos_selftest():
     pdf = _pdf_bytes_from_html("<h1>Hola Cloudinary</h1><p>Selftest</p>")
@@ -516,42 +522,53 @@ async def contratos_selftest():
         "resource_type": up.get("resource_type"),
     }
 
+
 # ============================================================
-# 5) Listar contratos (rol-aware) — con y sin slash
+# 5) Listar contratos (rol-aware) con filtros básicos
 # ============================================================
-async def _listar_contratos_impl(
-    db: AsyncSession,
-    current_user: User,
-    q: Optional[str],
-    usuario_id: Optional[int],
-    prestamo_id: Optional[int],
-    estado_firma: Optional[str],
-    fecha_desde: Optional[date],
-    fecha_hasta: Optional[date],
-    orden: str,
-    limit: int,
-    offset: int,
+@router_contratos.get("", summary="Listar contratos visibles según rol con filtros")
+@router_contratos.get("/", include_in_schema=False)
+async def listar_contratos(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    q: Optional[str] = Query(None, description="Busca por descripción de artículo o por IDs"),
+    usuario_id: Optional[int] = Query(None, description="Filtra por dueño (solo admin/valuador)"),
+    prestamo_id: Optional[int] = Query(None),
+    estado_firma: Optional[str] = Query(None),  # "pendiente" | "parcial" | "completo"
+    fecha_desde: Optional[date] = Query(None, description="YYYY-MM-DD (created_at si existe)"),
+    fecha_hasta: Optional[date] = Query(None, description="YYYY-MM-DD (created_at si existe)"),
+    orden: str = Query("reciente"),  # "reciente" | "antiguo"
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     uid = _resolve_user_id(current_user)
     _ensure_id_usuario_attr(current_user)
     es_admin = await _es_admin_valuador(current_user, db)
 
+    # columnas opcionales creadas/actualizadas
+    has_created = hasattr(Contrato, "created_at")
+    has_updated = hasattr(Contrato, "updated_at")
+
+    select_cols = [
+        Contrato.id_contrato,
+        Contrato.url_pdf,
+        Contrato.hash_doc,
+        Contrato.firma_cliente_en,
+        Contrato.firma_empresa_en,
+        Prestamo.id_prestamo,
+        Prestamo.monto_prestamo,
+        Prestamo.fecha_inicio,
+        Prestamo.fecha_vencimiento,
+        Articulo.descripcion.label("articulo_descripcion"),
+        Solicitud.id_usuario.label("owner_id"),
+    ]
+    if has_created:
+        select_cols.append(Contrato.created_at)
+    if has_updated:
+        select_cols.append(Contrato.updated_at)
+
     base = (
-        select(
-            Contrato.id_contrato,
-            Contrato.url_pdf,
-            Contrato.hash_doc,
-            Contrato.firma_cliente_en,
-            Contrato.firma_empresa_en,
-            getattr(Contrato, "created_at", None).label("created_at"),
-            getattr(Contrato, "updated_at", None).label("updated_at"),
-            Prestamo.id_prestamo,
-            Prestamo.monto_prestamo,
-            Prestamo.fecha_inicio,
-            Prestamo.fecha_vencimiento,
-            Articulo.descripcion.label("articulo_descripcion"),
-            Solicitud.id_usuario.label("owner_id"),
-        )
+        select(*select_cols)
         .join(Prestamo, Prestamo.id_prestamo == Contrato.id_prestamo)
         .join(Articulo, Articulo.id_articulo == Prestamo.id_articulo)
         .join(Solicitud, Solicitud.id_solicitud == Articulo.id_solicitud)
@@ -593,7 +610,7 @@ async def _listar_contratos_impl(
         elif estado_firma == "completo":
             conds.append(and_(Contrato.firma_cliente_en.is_not(None), Contrato.firma_empresa_en.is_not(None)))
 
-    fecha_campo = getattr(Contrato, "created_at", Prestamo.fecha_inicio)
+    fecha_campo = Contrato.created_at if has_created else Prestamo.fecha_inicio
     if fecha_desde:
         conds.append(fecha_campo >= datetime.combine(fecha_desde, datetime.min.time()))
     if fecha_hasta:
@@ -613,39 +630,22 @@ async def _listar_contratos_impl(
             "articulo": r.articulo_descripcion,
             "url_pdf": r.url_pdf,
             "hash_doc": r.hash_doc,
-            "monto_prestamo": float(r.monto_prestamo or 0),
+            "monto_prestamo": float(getattr(r, "monto_prestamo", 0) or 0),
             "fecha_inicio": r.fecha_inicio,
             "fecha_vencimiento": r.fecha_vencimiento,
             "firma_cliente_en": r.firma_cliente_en,
             "firma_empresa_en": r.firma_empresa_en,
-            "created_at": r.created_at,
-            "updated_at": r.updated_at,
         }
+        if has_created:
+            item["created_at"] = getattr(r, "created_at", None)
+        if has_updated:
+            item["updated_at"] = getattr(r, "updated_at", None)
         if es_admin:
             item["owner_id"] = r.owner_id
         items.append(item)
 
     return {"total": total, "limit": limit, "offset": offset, "es_admin": es_admin, "items": items}
 
-@router_contratos.get("", summary="Listar contratos visibles según rol con filtros")
-@router_contratos.get("/", include_in_schema=False)  # <- evita redirect 307/308
-async def listar_contratos(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    q: Optional[str] = Query(None, description="Busca en descripción de artículo o por ids"),
-    usuario_id: Optional[int] = Query(None, description="Filtra por dueño (solo admin/valuador)"),
-    prestamo_id: Optional[int] = Query(None),
-    estado_firma: Optional[str] = Query(None, pattern="^(pendiente|parcial|completo)$"),
-    fecha_desde: Optional[date] = Query(None, description="YYYY-MM-DD (created_at)"),
-    fecha_hasta: Optional[date] = Query(None, description="YYYY-MM-DD (created_at)"),
-    orden: str = Query("reciente", pattern="^(reciente|antiguo)$"),
-    limit: int = Query(20, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-):
-    return await _listar_contratos_impl(
-        db, current_user, q, usuario_id, prestamo_id,
-        estado_firma, fecha_desde, fecha_hasta, orden, limit, offset
-    )
 
 # ============================================================
 # 6) Mis contratos (solo dueño)
@@ -684,6 +684,7 @@ async def listar_mis_contratos(
         )
     return items
 
+
 # ============================================================
 # 7) Detalle de contrato (dueño o ADMIN/VALUADOR)
 # ============================================================
@@ -720,6 +721,6 @@ async def obtener_contrato(
         "firma_cliente_en": contrato.firma_cliente_en,
         "firma_empresa_en": contrato.firma_empresa_en,
         "owner_id": owner_id,
-        "created_at": getattr(contrato, "created_at", None),
-        "updated_at": getattr(contrato, "updated_at", None),
+        "created_at": getattr(contrato, "created_at, ", None) if hasattr(contrato, "created_at") else getattr(contrato, "created_at", None),
+        "updated_at": getattr(contrato, "updated_at, ", None) if hasattr(contrato, "updated_at") else getattr(contrato, "updated_at", None),
     }
