@@ -1,105 +1,109 @@
 # app/main.py
-from __future__ import annotations
-
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
-# ------------------------------------------------------------------
-# Config / modelos base
-# ------------------------------------------------------------------
+# Configuración y modelos base
 from app.core.config import settings
-from app.db import models  # noqa: F401  (asegura registro de modelos)
+from app.db import models  # noqa: F401  # asegura el registro de modelos para SQLAlchemy
 
-# ---------------- Routers núcleo ----------------
+# Routers base / negocio
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
-
-# Solicitudes & artículos
 from app.api.routers.solicitudes import router as solicitudes_router
-from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
-from app.api.routers import solicitudes_articulos  # expone .router
-from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.cloudinary_sign import router as cloudinary_router
-
-# Catálogos
+from app.api.routers.solicitudes_completa import router as solicitudes_completa_router
+from app.api.routers.recepciones import router as recepciones_router
 from app.api.routers.catalogos import router as catalogos_router
+from app.api.routers.crear_pagos import router as crear_pagos_router  # POST /pagos
 
-# Pagos / préstamos
-from app.api.routers.crear_pagos import router as crear_pagos_router
+# Solicitudes + artículos (agregar/obtener fotos y artículos)
+from app.api.routers import solicitudes_articulos  # expone .router
+
+# Valuador / pagos
+from app.api.routers.articulos_valuador import router as articulos_valuador_router
 from app.api.routers.pagos_validar import router as pagos_validar_router
 from app.api.routers.pagos import router as pagos_list_router
 
-# Valuación / Artículos
-from app.api.routers.articulos_valuador import router as articulos_valuador_router
+# Artículos: rechazo
 from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
 
-# Seguridad / RBAC (mod/perm/roles/usuarios/ACL)
+# Seguridad: módulos/roles/permisos
 from app.api.routers.modulos import router as modulos_router
 from app.api.routers.permisos import router as permisos_router
 from app.api.routers.roles import router as roles_router
 from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
 from app.api.routers.usuarios_permisos import router as usuarios_permisos_router
-from app.rbac.attach import attach_rbac_guards
 
-# Préstamos (procesos/listado)
+# Préstamos (recálculo / estado / listado / activar)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
 from app.api.routers.prestamos_evaluar_estado import router as prestamos_evaluar_estado_router
 from app.api.routers.procesar_incumplidos import router as procesar_incumplidos_router
-from app.api.routers.prestamos_activar import router as prestamos_activar_router
-from app.api.routers.prestamos_listado import router as prestamos_listado_router
+from app.api.routers.prestamos_activar import router as prestamos_activar_router       # NUEVO
+from app.api.routers.prestamos_listado import router as prestamos_listado_router       # NUEVO
 
-# Inventario y administración
+# RBAC
+from app.rbac.attach import attach_rbac_guards
+
+# Inventario y ACL admin + Admin usuarios
 from app.api.routers import inventario_venta
 from app.api.routers import acl_admin
 from app.api.routers import admin_usuarios
 
-# Contratos
+# Contratos / Préstamos
 from app.api.routers.contratos import router_prestamos, router_contratos
 from app.api.routers.contratos_get import router as router_contratos_get
 
-# Auditoría / Admin solicitudes
-from app.api.routers.auditoria import router as auditoria_router
+# Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
 
-# (opcionales)
+# Auditoría
+from app.api.routers.auditoria import router as auditoria_router
+
+# Seguridad (opcional; puede no existir en algunos entornos)
 try:
     from app.api.routers.seguridad import router as seguridad_router
 except Exception:
     seguridad_router = None
 
+# Test de reglas (opcional)
 try:
     from app.api.routers.test_regla import router as test_regla_router
 except Exception:
     test_regla_router = None
 
+# Reglas por Tipo de Artículo
+from app.api.routers.regla_tipo_articulo import router as regla_tipo_articulo_router
 
-# ------------------------------------------------------------------
-# CORS
-# ------------------------------------------------------------------
+
+# --------------------------------------------------------------------------------------
+# Utilidad interna: parseo de orígenes CORS
+# --------------------------------------------------------------------------------------
 def parse_origins(raw: str | None) -> list[str]:
+    """Convierte una cadena separada por comas en lista de orígenes permitidos."""
     if not raw:
         return []
     return [o.strip() for o in raw.split(",") if o.strip()]
 
+
 origins = parse_origins(getattr(settings, "CORS_ORIGINS", ""))
 
-# fallback para dev y vercel
+# Orígenes de respaldo usados en desarrollo y despliegue
 fallback = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://frontend-web-rust-nine.vercel.app",
-    "http://10.144.119.56:3000",
+     "http://10.144.119.56:3000",
 ]
 for o in fallback:
     if o not in origins:
         origins.append(o)
 
-# ------------------------------------------------------------------
-# App
-# ------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
+# Instancia de aplicación
+# --------------------------------------------------------------------------------------
 app = FastAPI(
     title="API Pignoraticios",
     root_path=getattr(settings, "ROOT_PATH", ""),
@@ -107,6 +111,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# El middleware CORS debe ir antes de incluir cualquier router
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -115,22 +120,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ------------------------------------------------------------------
-# Guards / ACL primero (para que envuelvan rutas)
-# ------------------------------------------------------------------
-attach_rbac_guards(app)
+# --------------------------------------------------------------------------------------
+# Registro de routers (agrupados por dominio funcional)
+# --------------------------------------------------------------------------------------
 
-# ------------------------------------------------------------------
-# Include routers
-# ------------------------------------------------------------------
-# Salud / auth
+# Salud y autenticación
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(auth_router)
 
-# Catálogos
+# Catálogos / configuración
 app.include_router(catalogos_router)
 
-# Solicitudes & artículos
+# Flujo de solicitudes y artículos
 app.include_router(solicitudes_router, prefix="/solicitudes", tags=["solicitudes"])
 app.include_router(solicitudes_completa_router)
 app.include_router(solicitudes_articulos.router)
@@ -138,15 +139,15 @@ app.include_router(recepciones_router)
 app.include_router(cloudinary_router)
 
 # Pagos
-app.include_router(pagos_list_router)          # GET  /prestamos/{id_prestamo}/pagos
-app.include_router(pagos_validar_router)       # POST /pagos/{id_pago}/validar
-app.include_router(crear_pagos_router)         # POST /pagos
+app.include_router(pagos_list_router)       # GET  /prestamos/{id_prestamo}/pagos
+app.include_router(pagos_validar_router)    # POST /pagos/{id_pago}/validar
+app.include_router(crear_pagos_router)      # POST /pagos
 
-# Valuación / artículos
+# Artículos (valuación y rechazo)
 app.include_router(articulos_valuador_router)
 app.include_router(articulo_rechazar_router)
 
-# Seguridad (modelo de datos de permisos/roles)
+# Seguridad y control de acceso (ACL)
 app.include_router(modulos_router)
 app.include_router(permisos_router)
 app.include_router(roles_router)
@@ -154,49 +155,52 @@ app.include_router(roles_permisos_router)
 app.include_router(usuario_roles_router)
 app.include_router(usuarios_permisos_router)
 
-# Préstamos (procesos/listas)
-app.include_router(prestamos_recalcular_router)
-app.include_router(prestamos_recalcular_bulk_router)
+# Préstamos (recálculo / procesos)
+app.include_router(prestamos_recalcular_router)        # individual
+app.include_router(prestamos_recalcular_bulk_router)   # bulk
 app.include_router(prestamos_evaluar_estado_router)
 app.include_router(procesar_incumplidos_router)
-app.include_router(prestamos_activar_router)
-app.include_router(prestamos_listado_router)
+app.include_router(prestamos_activar_router)           # activar préstamo
+app.include_router(prestamos_listado_router)           # listado de préstamos
 
-# Inventario / administración
+# Inventario y ACL Admin + Admin Usuarios
+attach_rbac_guards(app)
 app.include_router(inventario_venta.router)
 app.include_router(acl_admin.router)
 app.include_router(admin_usuarios.router)
 
-# Contratos
-app.include_router(router_prestamos)     # /prestamos/{id}/generar-contrato
-app.include_router(router_contratos)     # /contratos (POST firmar, GET list, etc.)
-app.include_router(router_contratos_get) # /contratos (GET mis / detalle con schemas)
-
-# Auditoría / admin solicitudes
+# Contratos / Préstamos
+app.include_router(router_prestamos)
+app.include_router(router_contratos)
+app.include_router(router_contratos_get)
+# Auditoría
 app.include_router(auditoria_router)
+
+# Admin solicitudes
 app.include_router(admin_solicitudes_router)
 
-# Seguridad (environments donde exista)
+# Seguridad (si existe)
 if seguridad_router:
     app.include_router(seguridad_router)
 
-# Usuarios (NO silenciar errores; loguea si falla)
+# Usuarios (si existe el router)
 try:
-    from app.api.routers.usuarios import router as usuarios_router
-    app.include_router(usuarios_router)
-    print("[ROUTER] /usuarios registrado")
-except Exception as e:
-    print("[ROUTER] /usuarios NO registrado:", repr(e))
-    # opcional: descomenta para detectar en deploy
-    # raise
+    from app.api.routers import usuarios as usuarios_router_module
+    app.include_router(usuarios_router_module.router)
+except Exception:
+    # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
+    pass
 
-# Reglas (opcional)
+# Reglas por Tipo de Artículo
+app.include_router(regla_tipo_articulo_router)
+
+# Test de reglas (opcional)
 if test_regla_router:
     app.include_router(test_regla_router)
 
-# ------------------------------------------------------------------
-# Diagnóstico / root
-# ------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
+# Utilidades de diagnóstico (opcional)
+# --------------------------------------------------------------------------------------
 _diag = APIRouter()
 
 @_diag.get("/cloudinary/ping-local")
@@ -205,15 +209,19 @@ def cloud_ping_local():
 
 app.include_router(_diag)
 
+# --------------------------------------------------------------------------------------
+# Raíz de la API
+# --------------------------------------------------------------------------------------
 @app.get("/")
 def root():
     return {"ok": True, "name": "API Pignoraticios"}
 
-# Log de rutas al arrancar
+# --------------------------------------------------------------------------------------
+# Log de rutas registradas (útil en desarrollo)
+# --------------------------------------------------------------------------------------
 try:
-    rutas = [f"{r.methods} {r.path}" for r in app.routes if isinstance(r, APIRoute)]
-    print("RUTAS REGISTRADAS: ", len(rutas))
-    for rp in sorted(rutas):
-        print(" -", rp)
+    rutas = [r.path for r in app.routes if isinstance(r, APIRoute)]
+    print("RUTAS REGISTRADAS:", rutas)
 except Exception:
+    # Evita romper el arranque si el print falla en algunos entornos
     pass
