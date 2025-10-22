@@ -29,16 +29,70 @@ from app.utils.roles import usuario_tiene_algun_rol
 
 import cloudinary
 import cloudinary.uploader
+from cloudinary.exceptions import Error as CloudinaryError
 
 # ============================================================
-# CLOUDINARY (leer de variables de entorno)
+# CLOUDINARY (lee variables de entorno)
 # ============================================================
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
     api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True,  # fuerza HTTPS
+    secure=True,  # HTTPS
 )
+
+# ------------------------------------------------------------
+# Helper: subir con preset si existe; si falla, reintentar firmado
+#           (limpia env + config interna del SDK y luego restaura)
+# ------------------------------------------------------------
+def _cld_upload_with_preset_fallback(file_or_bytes, **options):
+    """
+    1) Si CLOUDINARY_UPLOAD_PRESET existe -> intenta unsigned con preset.
+    2) Si falla -> intenta firmado SIN preset limpiando env y config interna.
+    """
+    preset = os.getenv("CLOUDINARY_UPLOAD_PRESET")
+
+    # 1) Intento unsigned con preset (si hay)
+    if preset:
+        try:
+            return cloudinary.uploader.upload(
+                file_or_bytes,
+                upload_preset=preset,
+                unsigned=True,
+                **options,
+            )
+        except CloudinaryError as e:
+            print(f"[Cloudinary] unsigned con preset '{preset}' falló: {e}. Reintentando firmado...")
+
+    # 2) Intento firmado SIN preset (borrar env + limpiar config del SDK)
+    prev_env = os.environ.get("CLOUDINARY_UPLOAD_PRESET", None)
+    cfg_before = cloudinary.config()  # snapshot
+
+    try:
+        # quitar preset del entorno y de la config interna
+        if prev_env is not None:
+            os.environ.pop("CLOUDINARY_UPLOAD_PRESET", None)
+        cloudinary.config(upload_preset=None)
+
+        # no pasar preset por options
+        options.pop("upload_preset", None)
+        # forzar firmado explícito (opcional, por claridad)
+        options["unsigned"] = False
+
+        return cloudinary.uploader.upload(file_or_bytes, **options)
+    finally:
+        # restaurar entorno exacto
+        if prev_env is not None:
+            os.environ["CLOUDINARY_UPLOAD_PRESET"] = prev_env
+
+        # restaurar config del SDK tal como estaba
+        cloudinary.config(
+            cloud_name=cfg_before.cloud_name,
+            api_key=cfg_before.api_key,
+            api_secret=cfg_before.api_secret,
+            secure=cfg_before.secure,
+            upload_preset=getattr(cfg_before, "upload_preset", None),
+        )
 
 # ============================================================
 # PDF BACKEND (WeasyPrint -> ReportLab -> Mínimo)
@@ -49,7 +103,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     """Genera PDF bytes desde HTML con el mejor backend disponible sin romper import-time."""
     global _PDF_BACKEND
 
-    # A) WeasyPrint (si está instalado)
+    # A) WeasyPrint
     try:
         from weasyprint import HTML
         pdf_io = io.BytesIO()
@@ -59,7 +113,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     except Exception:
         pass
 
-    # B) ReportLab (fallback)
+    # B) ReportLab
     try:
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import LETTER
@@ -84,7 +138,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     except Exception:
         pass
 
-    # C) Mínimo (PDF válido sin dependencias externas)
+    # C) Mínimo (PDF válido sin dependencias)
     content = "Contrato\n\n" + re.sub(r"<[^>]+>", "", html_str)
     safe = content[:1500].replace("(", r"\(").replace(")", r"\)")
     text_stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET"
@@ -227,12 +281,12 @@ async def generar_contrato(
 
     hash_doc = hashlib.sha256(pdf_bytes).hexdigest()
 
-    # Subir a Cloudinary (firmado)
-    upload_result = cloudinary.uploader.upload(
-        pdf_bytes,                       # bytes directos
+    # Subir a Cloudinary (con fallback preset → firmado)
+    upload_result = _cld_upload_with_preset_fallback(
+        pdf_bytes,
         folder="contratos",
         public_id=f"contrato_{id_prestamo}",
-        resource_type="raw",             # PDF = raw
+        resource_type="raw",  # PDF = raw
         overwrite=True,
         format="pdf",
     )
@@ -275,9 +329,6 @@ async def generar_contrato(
 
 # ============================================================
 # 2) Registrar firma "dibujada" (imagen base64)
-#    Reglas:
-#      - firmante="cliente"  => solo el dueño de la solicitud
-#      - firmante="empresa"  => solo ADMINISTRADOR o VALUADOR
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar",
@@ -325,8 +376,8 @@ async def firmar_contrato(
     if firmante == "empresa" and not es_admin_o_valuador:
         raise HTTPException(status_code=403, detail="Solo ADMINISTRADOR o VALUADOR pueden firmar como empresa")
 
-    # Subir imagen de firma (Data URL o base64 crudo)
-    upload = cloudinary.uploader.upload(
+    # Subir imagen de firma (Data URL o base64 crudo) con fallback preset → firmado
+    upload = _cld_upload_with_preset_fallback(
         firma_digital,
         folder="contratos/firmas",
         public_id=f"firma_{id_contrato}_{firmante}",
@@ -384,9 +435,7 @@ async def firmar_contrato(
     }
 
 # ============================================================
-# 3) (Opcional) Firma CRIPTOGRÁFICA X.509 del PDF (pyHanko)
-#    Requiere CERT_PFX_B64 y CERT_PFX_PASSWORD en el entorno.
-#    Sobrescribe contrato.url_pdf con la versión firmada.
+# 3) Firma CRIPTOGRÁFICA X.509 del PDF (pyHanko) - opcional
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar-cripto",
@@ -440,8 +489,8 @@ async def firmar_cripto(
     signed_bytes = out.getvalue()
     hash_signed = hashlib.sha256(signed_bytes).hexdigest()
 
-    # Subir versión firmada
-    upload = cloudinary.uploader.upload(
+    # Subir versión firmada con fallback preset → firmado
+    upload = _cld_upload_with_preset_fallback(
         signed_bytes,
         folder="contratos",
         public_id=f"contrato_{contrato.id_prestamo}_signed",
@@ -481,12 +530,14 @@ async def firmar_cripto(
     }
 
 # ============================================================
-# 4) (Opcional) Self-test para validar Cloudinary y PDF
+# 4) Self-test para validar Cloudinary y PDF
+#    (con y sin slash final para evitar 404)
 # ============================================================
 @router_contratos.get("/_selftest", summary="Probar PDF + Cloudinary (puedes borrar este endpoint)")
+@router_contratos.get("/_selftest/", include_in_schema=False)
 async def contratos_selftest():
     pdf = _pdf_bytes_from_html("<h1>Hola Cloudinary</h1><p>Selftest</p>")
-    up = cloudinary.uploader.upload(
+    up = _cld_upload_with_preset_fallback(
         pdf,
         folder="contratos/_selftest",
         public_id="ping",
