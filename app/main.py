@@ -52,9 +52,14 @@ from app.api.routers import inventario_venta
 from app.api.routers import acl_admin
 from app.api.routers import admin_usuarios
 
-# Contratos / Préstamos
+# Contratos / Préstamos (UNIFICADO)
 from app.api.routers.contratos import router_prestamos, router_contratos
-from app.api.routers.contratos_get import router as router_contratos_get
+
+# ⚠️ CONTRATOS GET (legacy/separado) — DESACTIVADO para evitar rutas duplicadas
+ENABLE_CONTRATOS_GET = False
+if ENABLE_CONTRATOS_GET:
+    # Import diferido para evitar error si no existe
+    from app.api.routers.contratos_get import router as router_contratos_get  # noqa: F401
 
 # Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
@@ -95,7 +100,7 @@ fallback = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://frontend-web-rust-nine.vercel.app",
-     "http://10.144.119.56:3000",
+    "http://10.144.119.56:3000",
 ]
 for o in fallback:
     if o not in origins:
@@ -169,10 +174,15 @@ app.include_router(inventario_venta.router)
 app.include_router(acl_admin.router)
 app.include_router(admin_usuarios.router)
 
-# Contratos / Préstamos
+# Contratos / Préstamos (UNIFICADO)
 app.include_router(router_prestamos)
 app.include_router(router_contratos)
-app.include_router(router_contratos_get)
+
+# ⚠️ NO montamos contratos_get para evitar duplicados en /contratos/*
+# Cuando quieras habilitarlo de forma segura, cambia ENABLE_CONTRATOS_GET=True
+# y dale un prefix distinto, por ejemplo:
+#   app.include_router(router_contratos_get, prefix="/contratos-view", tags=["Contratos (GET)"])
+
 # Auditoría
 app.include_router(auditoria_router)
 
@@ -188,7 +198,6 @@ try:
     from app.api.routers import usuarios as usuarios_router_module
     app.include_router(usuarios_router_module.router)
 except Exception:
-    # Si no existe el módulo/archivo o el router, se ignora sin romper el arranque.
     pass
 
 # Reglas por Tipo de Artículo
@@ -223,5 +232,4 @@ try:
     rutas = [r.path for r in app.routes if isinstance(r, APIRoute)]
     print("RUTAS REGISTRADAS:", rutas)
 except Exception:
-    # Evita romper el arranque si el print falla en algunos entornos
     pass
