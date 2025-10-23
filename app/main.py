@@ -6,7 +6,7 @@ from fastapi.routing import APIRoute
 # Configuración y modelos base
 from app.core.config import settings
 from app.db import models  # noqa: F401  # asegura el registro de modelos para SQLAlchemy
-
+from app.api.routers.pagos_listar import router as pagos_listar_router
 # Routers base / negocio
 from app.api.routers.health import router as health_router
 from app.api.routers.auth import router as auth_router
@@ -195,7 +195,7 @@ try:
     app.include_router(usuarios_router_module.router)
 except Exception:
     pass
-
+app.include_router(pagos_listar_router)
 # Reglas por Tipo de Artículo
 app.include_router(regla_tipo_articulo_router)
 
