@@ -1,6 +1,5 @@
-
 # ============================================================
-# app/api/routers/contratos.py — UNIFICADO
+# app/api/routers/contratos.py — UNIFICADO (con validaciones extra)
 # ============================================================
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from typing import Optional
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,7 +129,7 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
     except Exception:
         pass
 
-    # 2) Luego intenta WeasyPrint (si lo tienes instalado con Cairo/Pango)
+    # 2) Luego intenta WeasyPrint (si lo tienes instalado)
     try:
         from weasyprint import HTML
         pdf_io = io.BytesIO()
@@ -205,6 +204,12 @@ def _ensure_data_url_png(b64_or_dataurl: str) -> str:
     if b64_or_dataurl.startswith("data:image"):
         return b64_or_dataurl
     return "data:image/png;base64," + b64_or_dataurl
+
+async def _estado_activo(db: AsyncSession) -> Optional[EstadoPrestamo]:
+    """Obtiene el estado 'activo' (case-insensitive)."""
+    return (await db.execute(
+        select(EstadoPrestamo).where(EstadoPrestamo.nombre.ilike("activo"))
+    )).scalar_one_or_none()
 
 # --------- Routers ---------
 router_prestamos = APIRouter(prefix="/prestamos", tags=["Contratos"])
@@ -325,7 +330,7 @@ async def generar_contrato(
     }
 
 # ============================================================
-# 2) Firmar contrato (cliente/empresa)
+# 2) Firmar contrato (cliente/empresa) — orden forzado + activación
 # ============================================================
 @router_contratos.post(
     "/{id_contrato}/firmar",
@@ -350,7 +355,7 @@ async def firmar_contrato(
     _ensure_id_usuario_attr(current_user)
 
     row = (await db.execute(
-        select(Contrato, Solicitud.id_usuario.label("owner_id"))
+        select(Contrato, Prestamo, Solicitud.id_usuario.label("owner_id"))
         .join(Prestamo, Prestamo.id_prestamo == Contrato.id_prestamo)
         .join(Articulo, Articulo.id_articulo == Prestamo.id_articulo)
         .join(Solicitud, Solicitud.id_solicitud == Articulo.id_solicitud)
@@ -360,17 +365,23 @@ async def firmar_contrato(
         raise HTTPException(status_code=404, detail="Contrato no encontrado")
 
     contrato: Contrato = row[0]
-    owner_id: int = row[1]
+    prestamo: Prestamo = row[1]
+    owner_id: int = row[2]
     es_admin_o_valuador = await _es_admin_valuador(current_user, db)
     es_duenio = owner_id == user_id
 
+    # Permisos por tipo de firma
     if firmante == "cliente" and not es_duenio:
         raise HTTPException(status_code=403, detail="Solo el dueño puede firmar como cliente")
     if firmante == "empresa" and not es_admin_o_valuador:
         raise HTTPException(status_code=403, detail="Solo ADMINISTRADOR o VALUADOR pueden firmar como empresa")
 
-    firma_data_url = _ensure_data_url_png(firma_digital)
+    # REGLA de orden: la empresa solo puede firmar si el cliente ya firmó
+    if firmante == "empresa" and not contrato.firma_cliente_en:
+        raise HTTPException(status_code=409, detail="Primero debe firmar el cliente")
 
+    # Guardar firma (Cloudinary)
+    firma_data_url = _ensure_data_url_png(firma_digital)
     upload = _cld_upload_with_preset_fallback(
         firma_data_url,
         folder="contratos/firmas",
@@ -390,6 +401,7 @@ async def firmar_contrato(
     if not firma_url:
         raise HTTPException(status_code=500, detail="Fallo al subir la firma a Cloudinary")
 
+    # Registrar timestamp de firma
     ts_now = datetime.utcnow()
     if firmante == "cliente":
         contrato.firma_cliente_en = ts_now
@@ -399,6 +411,21 @@ async def firmar_contrato(
     await db.flush()
 
     contrato_completado = bool(contrato.firma_cliente_en and contrato.firma_empresa_en)
+
+    # Si se completan ambas firmas y la última es EMPRESA → activar préstamo
+    if contrato_completado and firmante == "empresa":
+        estado_act = await _estado_activo(db)
+        if estado_act:
+            prestamo.id_estado = estado_act.id_estado_prestamo
+            await db.flush()
+            await registrar_auditoria(
+                db=db,
+                usuario_id=user_id,
+                accion="PRESTAMO_ACTIVADO_AUTOMATICO",
+                modulo="Prestamo",
+                detalle=f"Prestamo {prestamo.id_prestamo} activado al completar firmas",
+                valores_nuevos={"id_estado": estado_act.id_estado_prestamo, "estado_nombre": estado_act.nombre},
+            )
 
     await registrar_auditoria(
         db=db,
@@ -701,7 +728,7 @@ async def listar_mis_contratos(
     return items
 
 # ============================================================
-# 7) Detalle de contrato (dueño o ADMIN/VALUADOR)
+# 7) Detalle de contrato (dueño o ADMIN/VALUADOR) — con resumen del préstamo
 # ============================================================
 @router_contratos.get("/{id_contrato}", summary="Detalle de contrato (dueño o ADMIN/VALUADOR)")
 async def obtener_contrato(
@@ -712,10 +739,18 @@ async def obtener_contrato(
     user_id = _resolve_user_id(current_user)
 
     stmt = (
-        select(Contrato, Prestamo.id_prestamo, Solicitud.id_usuario.label("owner_id"))
+        select(
+            Contrato,
+            Prestamo,
+            Articulo.descripcion.label("articulo_descripcion"),
+            EstadoPrestamo.id_estado_prestamo.label("estado_id"),
+            EstadoPrestamo.nombre.label("estado_nombre"),
+            Solicitud.id_usuario.label("owner_id"),
+        )
         .join(Prestamo, Prestamo.id_prestamo == Contrato.id_prestamo)
         .join(Articulo, Articulo.id_articulo == Prestamo.id_articulo)
         .join(Solicitud, Solicitud.id_solicitud == Articulo.id_solicitud)
+        .join(EstadoPrestamo, EstadoPrestamo.id_estado_prestamo == Prestamo.id_estado)
         .where(Contrato.id_contrato == id_contrato)
     )
     row = (await db.execute(stmt)).one_or_none()
@@ -723,7 +758,11 @@ async def obtener_contrato(
         raise HTTPException(status_code=404, detail="Contrato no encontrado")
 
     contrato: Contrato = row[0]
-    owner_id: int = row[2]
+    prestamo: Prestamo = row[1]
+    articulo_desc: Optional[str] = row[2]
+    estado_id: int = row[3]
+    estado_nombre: str = row[4]
+    owner_id: int = row[5]
 
     if owner_id != user_id and not (await _es_admin_valuador(current_user, db)):
         raise HTTPException(status_code=403, detail="No tienes permiso para ver este contrato")
@@ -738,6 +777,17 @@ async def obtener_contrato(
         "owner_id": owner_id,
         "created_at": getattr(contrato, "created_at", None),
         "updated_at": getattr(contrato, "updated_at", None),
+        # ---- RESUMEN DEL PRESTAMO ----
+        "prestamo": {
+            "monto_prestamo": float(prestamo.monto_prestamo or 0),
+            "fecha_inicio": prestamo.fecha_inicio,
+            "fecha_vencimiento": prestamo.fecha_vencimiento,
+            "deuda_actual": float(getattr(prestamo, "deuda_actual", 0) or 0),
+            "mora_acumulada": float(getattr(prestamo, "mora_acumulada", 0) or 0),
+            "interes_acumulada": float(getattr(prestamo, "interes_acumulada", 0) or 0),
+            "estado": {"id": estado_id, "nombre": estado_nombre},
+            "articulo": {"descripcion": articulo_desc},
+        },
     }
 
 # ============================================================
@@ -772,9 +822,10 @@ async def abrir_pdf_contrato(
 
     url = _cld_normalize_pdf_url(contrato.url_pdf)
     return RedirectResponse(url=url, status_code=302)
-# en la cabecera del archivo
-from fastapi.responses import StreamingResponse
 
+# ============================================================
+# 9) Render del PDF proxied por backend (seguro para iframe)
+# ============================================================
 @router_contratos.get("/{id_contrato}/ver", summary="Renderiza el PDF del contrato vía backend")
 async def ver_pdf_contrato(
     id_contrato: int,
