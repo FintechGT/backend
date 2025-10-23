@@ -13,6 +13,7 @@ from typing import Optional
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +44,12 @@ cloudinary.config(
     secure=True,
 )
 
+# ---------- Helpers Cloudinary ----------
+def _cld_normalize_pdf_url(url: str) -> str:
+    """Si la URL quedó con /raw/upload/ intenta usar /image/upload/ para vista embebida."""
+    if not url:
+        return url
+    return url.replace("/raw/upload/", "/image/upload/")
 
 def _cld_upload_with_preset_fallback(file_or_bytes, **options):
     """
@@ -82,26 +89,14 @@ def _cld_upload_with_preset_fallback(file_or_bytes, **options):
             upload_preset=getattr(cfg_before, "upload_preset", None),
         )
 
-
 # --------- PDF BACKENDS ----------
 _PDF_BACKEND = "none"
 
-
 def _pdf_bytes_from_html(html_str: str) -> bytes:
-    """Genera PDF desde HTML, probando WeasyPrint → ReportLab → fallback mínimo."""
+    """Genera PDF desde HTML. Preferimos ReportLab por estabilidad en Windows."""
     global _PDF_BACKEND
 
-    # A) WeasyPrint
-    try:
-        from weasyprint import HTML
-        pdf_io = io.BytesIO()
-        HTML(string=html_str, base_url=".").write_pdf(target=pdf_io)
-        _PDF_BACKEND = "weasyprint"
-        return pdf_io.getvalue()
-    except Exception:
-        pass
-
-    # B) ReportLab (fallback elegante)
+    # 1) ReportLab primero
     try:
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import LETTER
@@ -109,24 +104,45 @@ def _pdf_bytes_from_html(html_str: str) -> bytes:
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=LETTER)
         w, h = LETTER
+        c.setTitle("Contrato")
+        c.setAuthor("Pignoraticios")
         c.setFont("Helvetica-Bold", 14)
-        c.drawString(2 * cm, h - 2 * cm, "Contrato (Fallback ReportLab)")
+        c.drawString(2 * cm, h - 2 * cm, "Contrato de Préstamo")
         c.setFont("Helvetica", 10)
         text = re.sub(r"<[^>]+>", "", html_str)
         y = h - 3 * cm
-        for line in text.splitlines()[:70]:
-            c.drawString(2 * cm, y, line[:110])
-            y -= 12
-            if y < 2 * cm:
-                c.showPage()
-                y = h - 2 * cm
+        for line in text.splitlines():
+            for chunk in [line[i:i+100] for i in range(0, len(line), 100)]:
+                c.drawString(2 * cm, y, chunk)
+                y -= 12
+                if y < 2 * cm:
+                    c.showPage()
+                    c.setFont("Helvetica", 10)
+                    y = h - 2 * cm
+        c.showPage()
         c.save()
         _PDF_BACKEND = "reportlab"
-        return buf.getvalue()
+        pdf = buf.getvalue()
+        if not (pdf.startswith(b"%PDF-") and len(pdf) > 800):
+            raise RuntimeError("PDF inválido tras ReportLab")
+        return pdf
     except Exception:
         pass
 
-    # C) Mínimo válido PDF
+    # 2) Luego intenta WeasyPrint (si lo tienes instalado con Cairo/Pango)
+    try:
+        from weasyprint import HTML
+        pdf_io = io.BytesIO()
+        HTML(string=html_str, base_url=".").write_pdf(target=pdf_io)
+        pdf = pdf_io.getvalue()
+        _PDF_BACKEND = "weasyprint"
+        if not (pdf.startswith(b"%PDF-") and len(pdf) > 800):
+            raise RuntimeError("PDF inválido tras WeasyPrint")
+        return pdf
+    except Exception:
+        pass
+
+    # 3) Fallback mínimo (último recurso)
     content = "Contrato\n\n" + re.sub(r"<[^>]+>", "", html_str)
     safe = content[:1500].replace("(", r"\(").replace(")", r"\)")
     text_stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET"
@@ -153,8 +169,10 @@ startxref
 %%EOF
 """
     _PDF_BACKEND = "minimal"
-    return pdf.encode("latin-1", errors="ignore")
-
+    pdf_bytes = pdf.encode("latin-1", errors="ignore")
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise RuntimeError("Fallback mínimo generó bytes no PDF")
+    return pdf_bytes
 
 # --------- Firma X.509 opcional ----------
 _USE_PYHANKO = False
@@ -165,7 +183,6 @@ try:
 except Exception:
     _USE_PYHANKO = False
 
-
 # --------- Helpers de auth/rol ----------
 def _resolve_user_id(u: User) -> int:
     for attr in ("ID_Usuario", "id_usuario", "id"):
@@ -174,15 +191,12 @@ def _resolve_user_id(u: User) -> int:
             return val
     raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario")
 
-
 def _ensure_id_usuario_attr(u: User) -> None:
     if not hasattr(u, "id_usuario"):
         setattr(u, "id_usuario", _resolve_user_id(u))
 
-
 async def _es_admin_valuador(user: User, db: AsyncSession) -> bool:
     return await usuario_tiene_algun_rol(user, db, ["ADMINISTRADOR", "VALUADOR"])
-
 
 def _ensure_data_url_png(b64_or_dataurl: str) -> str:
     if not b64_or_dataurl:
@@ -191,11 +205,9 @@ def _ensure_data_url_png(b64_or_dataurl: str) -> str:
         return b64_or_dataurl
     return "data:image/png;base64," + b64_or_dataurl
 
-
 # --------- Routers ---------
 router_prestamos = APIRouter(prefix="/prestamos", tags=["Contratos"])
 router_contratos = APIRouter(prefix="/contratos", tags=["Contratos"])
-
 
 # ============================================================
 # 1) Generar contrato PDF
@@ -263,17 +275,21 @@ async def generar_contrato(
     pdf_bytes = _pdf_bytes_from_html(html)
     hash_doc = hashlib.sha256(pdf_bytes).hexdigest()
 
+    # Subimos como IMAGE para que Cloudinary permita vista embebida de PDF
     upload_result = _cld_upload_with_preset_fallback(
         pdf_bytes,
         folder="contratos",
         public_id=f"contrato_{id_prestamo}",
-        resource_type="raw",
+        resource_type="image",   # <--- clave
         overwrite=True,
         format="pdf",
+        type="upload",
     )
     url_pdf = upload_result.get("secure_url")
     if not url_pdf:
         raise HTTPException(status_code=500, detail="Fallo al subir el PDF a Cloudinary")
+
+    url_pdf = _cld_normalize_pdf_url(url_pdf)
 
     contrato = Contrato(
         id_prestamo=id_prestamo,
@@ -306,7 +322,6 @@ async def generar_contrato(
         "firma_cliente_en": contrato.firma_cliente_en,
         "firma_empresa_en": contrato.firma_empresa_en,
     }
-
 
 # ============================================================
 # 2) Firmar contrato (cliente/empresa)
@@ -411,7 +426,6 @@ async def firmar_contrato(
         "contrato_completado": contrato_completado,
     }
 
-
 # ============================================================
 # 3) Firma CRIPTOGRÁFICA X.509 del PDF (opcional)
 # ============================================================
@@ -465,13 +479,16 @@ async def firmar_cripto(
         signed_bytes,
         folder="contratos",
         public_id=f"contrato_{contrato.id_prestamo}_signed",
-        resource_type="raw",
+        resource_type="image",   # subir como image para previsualizar
         overwrite=True,
         format="pdf",
+        type="upload",
     )
     url_pdf_signed = upload.get("secure_url")
     if not url_pdf_signed:
         raise HTTPException(status_code=500, detail="Fallo al subir el PDF firmado a Cloudinary")
+
+    url_pdf_signed = _cld_normalize_pdf_url(url_pdf_signed)
 
     contrato.url_pdf = url_pdf_signed
     contrato.hash_doc = hash_signed
@@ -499,7 +516,6 @@ async def firmar_cripto(
         "firmado_cripto": True,
     }
 
-
 # ============================================================
 # 4) Self-test PDF + Cloudinary (puedes borrarlo en prod)
 # ============================================================
@@ -511,17 +527,17 @@ async def contratos_selftest():
         pdf,
         folder="contratos/_selftest",
         public_id="ping",
-        resource_type="raw",
+        resource_type="image",
         overwrite=True,
         format="pdf",
+        type="upload",
     )
     return {
         "pdf_backend": _PDF_BACKEND,
-        "secure_url": up.get("secure_url"),
+        "secure_url": _cld_normalize_pdf_url(up.get("secure_url")),
         "public_id": up.get("public_id"),
         "resource_type": up.get("resource_type"),
     }
-
 
 # ============================================================
 # 5) Listar contratos (rol-aware) con filtros básicos
@@ -628,7 +644,7 @@ async def listar_contratos(
             "id_contrato": r.id_contrato,
             "id_prestamo": r.id_prestamo,
             "articulo": r.articulo_descripcion,
-            "url_pdf": r.url_pdf,
+            "url_pdf": _cld_normalize_pdf_url(r.url_pdf),
             "hash_doc": r.hash_doc,
             "monto_prestamo": float(getattr(r, "monto_prestamo", 0) or 0),
             "fecha_inicio": r.fecha_inicio,
@@ -645,7 +661,6 @@ async def listar_contratos(
         items.append(item)
 
     return {"total": total, "limit": limit, "offset": offset, "es_admin": es_admin, "items": items}
-
 
 # ============================================================
 # 6) Mis contratos (solo dueño)
@@ -674,7 +689,7 @@ async def listar_mis_contratos(
             {
                 "id_contrato": contrato.id_contrato,
                 "id_prestamo": contrato.id_prestamo,
-                "url_pdf": contrato.url_pdf,
+                "url_pdf": _cld_normalize_pdf_url(contrato.url_pdf),
                 "hash_doc": contrato.hash_doc,
                 "firma_cliente_en": contrato.firma_cliente_en,
                 "firma_empresa_en": contrato.firma_empresa_en,
@@ -683,7 +698,6 @@ async def listar_mis_contratos(
             }
         )
     return items
-
 
 # ============================================================
 # 7) Detalle de contrato (dueño o ADMIN/VALUADOR)
@@ -716,11 +730,118 @@ async def obtener_contrato(
     return {
         "id_contrato": contrato.id_contrato,
         "id_prestamo": contrato.id_prestamo,
-        "url_pdf": contrato.url_pdf,
+        "url_pdf": _cld_normalize_pdf_url(contrato.url_pdf),
         "hash_doc": contrato.hash_doc,
         "firma_cliente_en": contrato.firma_cliente_en,
         "firma_empresa_en": contrato.firma_empresa_en,
         "owner_id": owner_id,
-        "created_at": getattr(contrato, "created_at, ", None) if hasattr(contrato, "created_at") else getattr(contrato, "created_at", None),
-        "updated_at": getattr(contrato, "updated_at, ", None) if hasattr(contrato, "updated_at") else getattr(contrato, "updated_at", None),
+        "created_at": getattr(contrato, "created_at", None),
+        "updated_at": getattr(contrato, "updated_at", None),
     }
+
+# ============================================================
+# 8) Abrir PDF normalizado (redirige al visor/descarga)
+# ============================================================
+@router_contratos.get("/{id_contrato}/abrir", summary="Redirige al PDF del contrato (normalizado)")
+async def abrir_pdf_contrato(
+    id_contrato: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    stmt = (
+        select(Contrato, Prestamo.id_prestamo, Solicitud.id_usuario.label("owner_id"))
+        .join(Prestamo, Prestamo.id_prestamo == Contrato.id_prestamo)
+        .join(Articulo, Articulo.id_articulo == Prestamo.id_articulo)
+        .join(Solicitud, Solicitud.id_solicitud == Articulo.id_solicitud)
+        .where(Contrato.id_contrato == id_contrato)
+    )
+    row = (await db.execute(stmt)).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Contrato no encontrado")
+
+    contrato: Contrato = row[0]
+    owner_id: int = row[2]
+    user_id = _resolve_user_id(current_user)
+
+    if owner_id != user_id and not (await _es_admin_valuador(current_user, db)):
+        raise HTTPException(status_code=403, detail="No tienes permiso para ver este contrato")
+
+    if not contrato.url_pdf:
+        raise HTTPException(status_code=404, detail="Contrato sin PDF")
+
+    url = _cld_normalize_pdf_url(contrato.url_pdf)
+    return RedirectResponse(url=url, status_code=302)
+# en la cabecera del archivo
+from fastapi.responses import StreamingResponse
+
+@router_contratos.get("/{id_contrato}/ver", summary="Renderiza el PDF del contrato vía backend")
+async def ver_pdf_contrato(
+    id_contrato: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 1) auth y fetch del contrato (igual que en /{id_contrato})
+    stmt = (
+        select(Contrato, Prestamo.id_prestamo, Solicitud.id_usuario.label("owner_id"))
+        .join(Prestamo, Prestamo.id_prestamo == Contrato.id_prestamo)
+        .join(Articulo, Articulo.id_articulo == Prestamo.id_articulo)
+        .join(Solicitud, Solicitud.id_solicitud == Articulo.id_solicitud)
+        .where(Contrato.id_contrato == id_contrato)
+    )
+    row = (await db.execute(stmt)).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Contrato no encontrado")
+
+    contrato: Contrato = row[0]
+    owner_id: int = row[2]
+    user_id = _resolve_user_id(current_user)
+    if owner_id != user_id and not (await _es_admin_valuador(current_user, db)):
+        raise HTTPException(status_code=403, detail="No tienes permiso para ver este contrato")
+
+    if not contrato.url_pdf:
+        raise HTTPException(status_code=404, detail="Contrato sin PDF")
+
+    # 2) normalizar por si quedó /raw/
+    url = contrato.url_pdf.replace("/raw/upload/", "/image/upload/")
+
+    # 3) descarga y stream con headers de PDF
+    r = requests.get(url, stream=True, timeout=30)
+    if r.status_code != 200:
+        # intenta segunda ruta por si el CDN exige raw
+        url_alt = contrato.url_pdf.replace("/image/upload/", "/raw/upload/")
+        r = requests.get(url_alt, stream=True, timeout=30)
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"No se pudo obtener el PDF (HTTP {r.status_code})")
+
+    # valida firma mínima
+    first = next(r.iter_content(chunk_size=5))
+    if first[:5] != b"%PDF-":
+        # si el primer chunk no trae firma, vuelve a descargar sin stream para validar
+        r2 = requests.get(url, timeout=30)
+        if r2.status_code == 200 and r2.content[:5] != b"%PDF-":
+            raise HTTPException(status_code=500, detail="El archivo remoto no es un PDF válido")
+        # si sí es PDF, construye stream con ese contenido
+        return StreamingResponse(
+            io.BytesIO(r2.content),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="contrato_{contrato.id_prestamo}.pdf"',
+                "Cache-Control": "private, max-age=0, no-cache",
+            },
+        )
+
+    # re-construye un generador que incluya los bytes ya leídos
+    def gen():
+        yield first
+        for chunk in r.iter_content(chunk_size=8192):
+            if chunk:
+                yield chunk
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="contrato_{contrato.id_prestamo}.pdf"',
+            "Cache-Control": "private, max-age=0, no-cache",
+        },
+    )
