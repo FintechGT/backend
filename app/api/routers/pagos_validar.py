@@ -1,10 +1,15 @@
+# ============================================================
+# app/api/routers/pagos_validar.py
+# ============================================================
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable
 
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Path
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, bindparam
 
 from app.db.database import get_db
 from app.core.security import get_current_user
@@ -17,39 +22,43 @@ from app.db.models.estado_prestamo import EstadoPrestamo
 from app.db.models.prestamo_movimiento import PrestamoMovimiento
 from app.db.models.user import User
 
-# Schemas
+# Schemas (I/O)
 from app.schemas.pagos_validar import ValidarPagoRequest, ValidarPagoResponse
 
-# Utilidades (no las tocamos)
+# Utils
 from app.utils.auditoria import registrar_auditoria
 from app.utils.roles import usuario_tiene_algun_rol
-
 
 router = APIRouter(prefix="/pagos", tags=["Pagos - Validación"])
 
 
+# --------------------------- Helpers ---------------------------
+
 def _resolve_user_id(u: User) -> int:
-    """Devuelve el id del usuario aunque el atributo se llame ID_Usuario, id_usuario o id."""
+    """
+    Devuelve el id del usuario aunque el atributo se llame ID_Usuario, id_usuario o id.
+    Lanza 500 si no puede resolverlo.
+    """
     for attr in ("ID_Usuario", "id_usuario", "id"):
         val = getattr(u, attr, None)
         if isinstance(val, int):
             return val
         if isinstance(val, str) and val.isdigit():
             return int(val)
-    raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario")
+    raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario autenticado")
 
 
 class _UserIdAdapter:
     """
-    Adaptador local para NO tocar utils.roles.
+    Adaptador para NO tocar utils.roles.
     Expone la propiedad 'id_usuario' aunque el modelo real use 'ID_Usuario' o 'id'.
     """
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int) -> None:
         self.id_usuario = user_id
 
 
 async def _obtener_estado_pago(db: AsyncSession, nombre: str) -> EstadoPago:
-    """Obtiene un estado de pago por nombre (case-insensitive)."""
+    """Obtiene un estado de pago por nombre (case-insensitive) o lanza 500."""
     result = await db.execute(
         select(EstadoPago).where(func.lower(EstadoPago.nombre) == nombre.lower())
     )
@@ -63,7 +72,7 @@ async def _obtener_estado_pago(db: AsyncSession, nombre: str) -> EstadoPago:
 
 
 async def _obtener_estado_prestamo(db: AsyncSession, nombre: str) -> EstadoPrestamo:
-    """Obtiene un estado de préstamo por nombre (case-insensitive)."""
+    """Obtiene un estado de préstamo por nombre (case-insensitive) o lanza 500."""
     result = await db.execute(
         select(EstadoPrestamo).where(func.lower(EstadoPrestamo.nombre) == nombre.lower())
     )
@@ -80,21 +89,23 @@ async def _obtener_estado_prestamo_flexible(
     db: AsyncSession, nombres: Iterable[str]
 ) -> EstadoPrestamo | None:
     """
-    Devuelve el primer estado de préstamo que exista en catálogo de la lista de nombres (case-insensitive).
-    Si no hay ninguno, retorna None.
+    Devuelve el primer estado de préstamo existente de la lista (case-insensitive).
+    Si ninguno existe, retorna None (no rompe la operación).
     """
     for nombre in nombres:
-        try:
-            return await _obtener_estado_prestamo(db, nombre)
-        except HTTPException:
-            continue
+        result = await db.execute(
+            select(EstadoPrestamo).where(func.lower(EstadoPrestamo.nombre) == nombre.lower())
+        )
+        encontrado = result.scalar_one_or_none()
+        if encontrado:
+            return encontrado
     return None
 
 
 async def _tiene_rol_fallback(db: AsyncSession, user_id: int, roles: list[str]) -> bool:
     """
-    Verificación de roles directa contra tus tablas reales (Roles / Usuario_Rol),
-    por si la utilidad utils.roles no coincide con los nombres de tu esquema.
+    Verificación directa contra tablas Usuario_Rol / Roles por si utils.roles
+    no coincide con nombres/ids del esquema. Usa IN expanding.
     """
     q = text("""
         SELECT 1
@@ -103,10 +114,11 @@ async def _tiene_rol_fallback(db: AsyncSession, user_id: int, roles: list[str]) 
         WHERE ur.ID_Usuario = :uid
           AND LOWER(r.Nombre) IN :rn
         LIMIT 1
-    """)
-    # Nota: el IN con tupla requiere pasarla así:
-    params = {"uid": user_id, "rn": tuple(n.lower() for n in roles)}
-    result = await db.execute(q, params)
+    """).bindparams(
+        bindparam("uid", value=user_id),
+        bindparam("rn", value=tuple(n.lower() for n in roles), expanding=True),
+    )
+    result = await db.execute(q)
     return result.scalar_one_or_none() is not None
 
 
@@ -118,7 +130,7 @@ def _aplicar_pago_a_saldos(
 ) -> dict:
     """
     Aplica el monto del pago siguiendo el orden: mora → interés → capital.
-    Retorna un dict con el desglose de aplicación y los nuevos saldos.
+    Retorna dict con desglose aplicado y nuevos saldos (mora/interés/capital).
     """
     restante = monto_pago
     aplicado_mora = Decimal("0.00")
@@ -154,6 +166,8 @@ def _aplicar_pago_a_saldos(
     }
 
 
+# --------------------------- Endpoint ---------------------------
+
 @router.post(
     "/{id_pago}/validar",
     response_model=ValidarPagoResponse,
@@ -162,112 +176,163 @@ def _aplicar_pago_a_saldos(
     description=(
         "Valida un pago pendiente, aplica el monto a los saldos del préstamo "
         "(mora → interés → capital), actualiza el estado del pago a 'validado', "
-        "crea el movimiento de abono y registra auditoría. Operación idempotente."
+        "crea el movimiento de abono y registra auditoría. Idempotente."
     ),
 )
 async def validar_pago(
-    id_pago: int,
+    id_pago: int = Path(..., ge=1, description="ID del pago a validar"),
     payload: ValidarPagoRequest = Body(default=ValidarPagoRequest()),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 1) Verificar permisos (CAJERO, ADMIN, OPERADOR)
+    # --- 1) Permisos ---
     user_id = _resolve_user_id(current_user)
     user_adapter = _UserIdAdapter(user_id)  # para utils.roles
-    roles_permitidos = ["CAJERO", "ADMIN", "OPERADOR"]
+
+    # Importante: usamos los nombres visibles en tu BD (ADMINISTRADOR, CAJERO, SUPERVISOR)
+    roles_permitidos = ["CAJERO", "ADMINISTRADOR", "SUPERVISOR"]
 
     allowed = await usuario_tiene_algun_rol(user_adapter, db, roles_permitidos)
     if not allowed:
-        # Fallback a consulta directa por si utils.roles no coincide con tu esquema
+        # Fallback por si utils.roles no mapea exactamente a tu esquema
         allowed = await _tiene_rol_fallback(db, user_id, roles_permitidos)
 
     if not allowed:
         raise HTTPException(status_code=403, detail="No tiene permiso para validar pagos")
 
-    # 2) Buscar el pago
-    result_pago = await db.execute(select(Pago).where(Pago.id_pago == id_pago))
-    pago = result_pago.scalar_one_or_none()
+    # --- 2) Pago ---
+    rs_pago = await db.execute(select(Pago).where(Pago.id_pago == id_pago))
+    pago = rs_pago.scalar_one_or_none()
     if not pago:
         raise HTTPException(status_code=404, detail=f"Pago {id_pago} no encontrado")
 
-    # 3) Validar que esté en estado 'pendiente'
-    result_estado_pago = await db.execute(
+    # --- 3) Estado del pago (solo 'pendiente' se puede validar) ---
+    rs_est_pago = await db.execute(
         select(EstadoPago).where(EstadoPago.id_estado_pago == pago.id_estado)
     )
-    estado_actual_pago = result_estado_pago.scalar_one_or_none()
-    if not estado_actual_pago or estado_actual_pago.nombre.lower() != "pendiente":
+    estado_actual_pago = rs_est_pago.scalar_one_or_none()
+    nombre_estado_pago = (estado_actual_pago.nombre if estado_actual_pago else "").lower()
+
+    if nombre_estado_pago != "pendiente":
+        # Idempotencia suave: si ya está 'validado', devolvemos 200 con el estado actual
+        if nombre_estado_pago == "validado":
+            # También refrescamos el préstamo para responder saldos reales
+            rs_prest = await db.execute(
+                select(Prestamo).where(Prestamo.id_prestamo == pago.id_prestamo)
+            )
+            prestamo_actual = rs_prest.scalar_one_or_none()
+            if not prestamo_actual:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Préstamo {pago.id_prestamo} asociado al pago no encontrado",
+                )
+
+            rs_ep = await db.execute(
+                select(EstadoPrestamo).where(
+                    EstadoPrestamo.id_estado_prestamo == prestamo_actual.id_estado
+                )
+            )
+            ep_final = rs_ep.scalar_one_or_none()
+            return ValidarPagoResponse(
+                id_pago=pago.id_pago,
+                estado="validado",
+                aplicacion={"mora": 0.0, "interes": 0.0, "capital": 0.0},
+                prestamo={
+                    "id": prestamo_actual.id_prestamo,
+                    "estado": ep_final.nombre if ep_final else "desconocido",
+                    "deuda_actual": float(prestamo_actual.deuda_actual),
+                    "mora_acumulada": float(prestamo_actual.mora_acumulada),
+                    "interes_acumulada": float(prestamo_actual.interes_acumulada),
+                },
+            )
+        # Si está en otro estado (ej. rechazado), bloqueamos
         raise HTTPException(
             status_code=409,
             detail=f"El pago está en estado '{estado_actual_pago.nombre if estado_actual_pago else 'desconocido'}', no se puede validar",
         )
 
-    # 4) Buscar el préstamo asociado
-    result_prestamo = await db.execute(
+    # --- 4) Préstamo asociado ---
+    rs_prestamo = await db.execute(
         select(Prestamo).where(Prestamo.id_prestamo == pago.id_prestamo)
     )
-    prestamo = result_prestamo.scalar_one_or_none()
+    prestamo = rs_prestamo.scalar_one_or_none()
     if not prestamo:
         raise HTTPException(
             status_code=404,
             detail=f"Préstamo {pago.id_prestamo} asociado al pago no encontrado",
         )
 
-    # 5) Validar que el préstamo admita pagos
-    result_estado_prestamo = await db.execute(
-        select(EstadoPrestamo).where(EstadoPrestamo.id_estado_prestamo == prestamo.id_estado)
+    # --- 5) Validar que el préstamo admita pagos ---
+    rs_estado_prest = await db.execute(
+        select(EstadoPrestamo).where(
+            EstadoPrestamo.id_estado_prestamo == prestamo.id_estado
+        )
     )
-    estado_actual_prestamo = result_estado_prestamo.scalar_one_or_none()
-    estados_admitidos = {"activo", "en_mora_parcial", "en_mora_grave", "aprobado_pendiente_entrega"}
-    if (not estado_actual_prestamo) or (estado_actual_prestamo.nombre.lower() not in estados_admitidos):
+    estado_actual_prestamo = rs_estado_prest.scalar_one_or_none()
+    estado_prestamo_nombre = (estado_actual_prestamo.nombre if estado_actual_prestamo else "").lower()
+
+    # Estados admitidos (ajústalos a tu catálogo real)
+    estados_admitidos = {
+        "activo",
+        "en_mora_parcial",
+        "en_mora_grave",
+        "aprobado_pendiente_entrega",
+    }
+    if estado_prestamo_nombre not in estados_admitidos:
         raise HTTPException(
             status_code=409,
             detail=f"El préstamo está en estado '{estado_actual_prestamo.nombre if estado_actual_prestamo else 'desconocido'}', no admite pagos",
         )
 
-    # 6) Validar monto del pago
+    # --- 6) Validar monto del pago ---
     monto_pago = Decimal(str(pago.monto))
     if monto_pago <= Decimal("0"):
         raise HTTPException(status_code=400, detail="El monto del pago debe ser mayor a 0")
 
-    # 7) Saldos actuales
+    # --- 7) Saldos actuales ---
     mora_actual = Decimal(str(prestamo.mora_acumulada))
     interes_actual = Decimal(str(prestamo.interes_acumulada))
     deuda_actual = Decimal(str(prestamo.deuda_actual))
 
-    # 8) Aplicar pago
+    # --- 8) Aplicar pago ---
     aplicacion = _aplicar_pago_a_saldos(monto_pago, mora_actual, interes_actual, deuda_actual)
 
-    # 9) Actualizar saldos del préstamo
+    # --- 9) Actualizar saldos de préstamo ---
     prestamo.mora_acumulada = aplicacion["nuevo_mora"]
     prestamo.interes_acumulada = aplicacion["nuevo_interes"]
     prestamo.deuda_actual = aplicacion["nuevo_capital"]
     prestamo.updated_at = datetime.now(timezone.utc)
 
-    # 10) Determinar nuevo estado del préstamo
-    saldo_total = aplicacion["nuevo_mora"] + aplicacion["nuevo_interes"] + aplicacion["nuevo_capital"]
+    # --- 10) Determinar nuevo estado del préstamo ---
+    saldo_total = (
+        aplicacion["nuevo_mora"] + aplicacion["nuevo_interes"] + aplicacion["nuevo_capital"]
+    )
 
     if saldo_total == Decimal("0"):
-        # Intentar 'cancelado' y si no existe, probar sinónimos comunes.
+        # buscar "cancelado" o sinónimos
         estado_cancel = await _obtener_estado_prestamo_flexible(
-            db,
-            ["cancelado", "completado", "pagado", "cerrado", "finalizado"]
+            db, ["cancelado", "completado", "pagado", "cerrado", "finalizado"]
         )
         if estado_cancel:
             prestamo.id_estado = estado_cancel.id_estado_prestamo
-        # si ninguno existe, dejamos el estado como está (no rompemos la operación)
     elif aplicacion["nuevo_mora"] == Decimal("0") and aplicacion["nuevo_interes"] == Decimal("0"):
-        # Si estaba en mora y ahora quedó al día
-        if estado_actual_prestamo.nombre.lower() in {"en_mora_parcial", "en_mora_grave"}:
+        if estado_prestamo_nombre in {"en_mora_parcial", "en_mora_grave"}:
             estado_activo = await _obtener_estado_prestamo_flexible(db, ["activo"])
             if estado_activo:
                 prestamo.id_estado = estado_activo.id_estado_prestamo
 
-    # 11) Actualizar estado del pago a 'validado'
+    # --- 11) Actualizar estado del pago a 'validado' ---
     estado_validado = await _obtener_estado_pago(db, "validado")
     pago.id_estado = estado_validado.id_estado_pago
     pago.id_validador = user_id
+    if not getattr(pago, "fecha_pago", None):
+        # si tu modelo permite null, fijamos ahora; si no, ignora.
+        try:
+            pago.fecha_pago = datetime.now(timezone.utc)
+        except Exception:
+            pass
 
-    # 12) Crear movimiento de abono
+    # --- 12) Crear movimiento de abono ---
     nota_detallada = (
         f"Abono aplicado: Mora Q{float(aplicacion['aplicado_mora']):.2f}, "
         f"Interés Q{float(aplicacion['aplicado_interes']):.2f}, "
@@ -285,14 +350,14 @@ async def validar_pago(
     )
     db.add(movimiento)
 
-    # 13) Auditoría
-    valores_nuevos_estado = {
-        "prestamo_estado": (
-            await db.execute(
-                select(EstadoPrestamo).where(EstadoPrestamo.id_estado_prestamo == prestamo.id_estado)
-            )
-        ).scalar_one().nombre
-    }
+    # --- 13) Auditoría descriptiva (además de los triggers de BD) ---
+    valores_nuevos_estado = {}
+    rs_estado_nuevo = await db.execute(
+        select(EstadoPrestamo).where(EstadoPrestamo.id_estado_prestamo == prestamo.id_estado)
+    )
+    ep_nuevo = rs_estado_nuevo.scalar_one_or_none()
+    if ep_nuevo:
+        valores_nuevos_estado["prestamo_estado"] = ep_nuevo.nombre
 
     await registrar_auditoria(
         db=db,
@@ -300,17 +365,17 @@ async def validar_pago(
         accion="VALIDAR_PAGO",
         modulo="Pago",
         detalle=(
-            f"Pago {id_pago} validado. Aplicado: Mora Q{float(aplicacion['aplicado_mora']):.2f}, "
+            f"Pago {id_pago} validado. Aplicado: "
+            f"Mora Q{float(aplicacion['aplicado_mora']):.2f}, "
             f"Interés Q{float(aplicacion['aplicado_interes']):.2f}, "
-            f"Capital Q{float(aplicacion['aplicado_capital']):.2f}. "
-            f"Préstamo {prestamo.id_prestamo} nuevo estado: {prestamo.id_estado}"
+            f"Capital Q{float(aplicacion['aplicado_capital']):.2f}."
         ),
         valores_anteriores={
-            "pago_estado": estado_actual_pago.nombre,
+            "pago_estado": estado_actual_pago.nombre if estado_actual_pago else "desconocido",
             "prestamo_mora": float(mora_actual),
             "prestamo_interes": float(interes_actual),
             "prestamo_deuda": float(deuda_actual),
-            "prestamo_estado": estado_actual_prestamo.nombre,
+            "prestamo_estado": estado_actual_prestamo.nombre if estado_actual_prestamo else "desconocido",
         },
         valores_nuevos={
             "pago_estado": "validado",
@@ -321,7 +386,7 @@ async def validar_pago(
         },
     )
 
-    # 14) Commit
+    # --- 14) Commit / refresh ---
     try:
         await db.commit()
         await db.refresh(pago)
@@ -331,13 +396,11 @@ async def validar_pago(
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al validar el pago: {str(e)}")
 
-    # 15) Estado final para respuesta
-    result_estado_final = await db.execute(
+    # --- 15) Respuesta final ---
+    rs_ep_final = await db.execute(
         select(EstadoPrestamo).where(EstadoPrestamo.id_estado_prestamo == prestamo.id_estado)
     )
-    estado_final = result_estado_final.scalar_one()
-
-    # 16) Respuesta
+    estado_final = rs_ep_final.scalar_one_or_none()
     return ValidarPagoResponse(
         id_pago=pago.id_pago,
         estado="validado",
@@ -348,7 +411,7 @@ async def validar_pago(
         },
         prestamo={
             "id": prestamo.id_prestamo,
-            "estado": estado_final.nombre,
+            "estado": estado_final.nombre if estado_final else "desconocido",
             "deuda_actual": float(prestamo.deuda_actual),
             "mora_acumulada": float(prestamo.mora_acumulada),
             "interes_acumulada": float(prestamo.interes_acumulada),
