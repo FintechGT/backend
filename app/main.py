@@ -35,7 +35,7 @@ from app.api.routers.roles import router as roles_router
 from app.api.routers.roles_permisos import router as roles_permisos_router
 from app.api.routers.usuario_roles import router as usuario_roles_router
 from app.api.routers.usuarios_permisos import router as usuarios_permisos_router
-
+from app.api.routers.mis_prestamos_pagos import router as mis_prestamos_pagos_router
 # Préstamos (recálculo / estado / listado / activar)
 from app.api.routers.prestamos_recalcular import router as prestamos_recalcular_router
 from app.api.routers.prestamos_recalcular_bulk import router as prestamos_recalcular_bulk_router
@@ -55,7 +55,7 @@ from app.api.routers import admin_usuarios
 # Contratos / Préstamos (UNIFICADO)
 from app.api.routers.contratos import router_prestamos, router_contratos
 
-# ⚠️ CONTRATOS GET (legacy/separado) — DESACTIVADO para evitar rutas duplicadas
+#  CONTRATOS GET (legacy/separado) — DESACTIVADO para evitar rutas duplicadas
 ENABLE_CONTRATOS_GET = False
 if ENABLE_CONTRATOS_GET:
     # Import diferido para evitar error si no existe
@@ -178,11 +178,7 @@ app.include_router(admin_usuarios.router)
 app.include_router(router_prestamos)
 app.include_router(router_contratos)
 
-# ⚠️ NO montamos contratos_get para evitar duplicados en /contratos/*
-# Cuando quieras habilitarlo de forma segura, cambia ENABLE_CONTRATOS_GET=True
-# y dale un prefix distinto, por ejemplo:
-#   app.include_router(router_contratos_get, prefix="/contratos-view", tags=["Contratos (GET)"])
-
+app.include_router(mis_prestamos_pagos_router)
 # Auditoría
 app.include_router(auditoria_router)
 
