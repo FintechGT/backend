@@ -27,7 +27,7 @@ from app.api.routers.pagos import router as pagos_list_router
 
 # Artículos: rechazo
 from app.api.routers.articulo_rechazar import router as articulo_rechazar_router
-
+from app.api.routers.prestamo_detalle_completo import router as prestamo_detalle_completo_router
 # Seguridad: módulos/roles/permisos
 from app.api.routers.modulos import router as modulos_router
 from app.api.routers.permisos import router as permisos_router
@@ -142,7 +142,7 @@ app.include_router(solicitudes_completa_router)
 app.include_router(solicitudes_articulos.router)
 app.include_router(recepciones_router)
 app.include_router(cloudinary_router)
-
+app.include_router(prestamo_detalle_completo_router)
 # Pagos
 app.include_router(pagos_list_router)       # GET  /prestamos/{id_prestamo}/pagos
 app.include_router(pagos_validar_router)    # POST /pagos/{id_pago}/validar
