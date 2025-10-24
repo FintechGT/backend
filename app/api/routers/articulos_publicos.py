@@ -33,7 +33,14 @@ from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.db.models.articulo import Articulo
-from app.db.models.articulo_foto import ArticuloFoto  # ✅ nombre correcto
+
+# --- Protección del import: funciona con ArticuloFoto o Articulo_Foto ---
+try:
+    from app.db.models.articulo_foto import ArticuloFoto  # nombre recomendado
+except ImportError:
+    from app.db.models.articulo_foto import Articulo_Foto as ArticuloFoto  # fallback
+# ------------------------------------------------------------------------
+
 from app.db.models.estado_articulo import EstadoArticulo
 from app.db.models.tipo_articulo import TipoArticulo
 from app.db.models.inventario_venta import InventarioVenta
@@ -68,13 +75,9 @@ async def get_optional_user(
         return None
 
     try:
-        if authorization.startswith("Bearer "):
-            token = authorization[7:]
-        else:
-            token = authorization
-
-        # Usa el helper existente si está disponible
-        from app.core.security import get_current_user  # import local para evitar ciclos
+        token = authorization[7:] if authorization.startswith("Bearer ") else authorization
+        # Import local para evitar ciclos
+        from app.core.security import get_current_user
         user = await get_current_user(token=token, db=db)
         return user
     except Exception:
@@ -138,7 +141,7 @@ async def listar_articulos_publicos(
     user = await get_optional_user(db=db, authorization=authorization)
     puede_ver_todos = await _puede_ver_todos_articulos(db, user)
 
-    # Query base con cargas relacionadas
+    # Query base con cargas relacionadas (si existen en el modelo)
     stmt = select(Articulo).options(
         selectinload(Articulo.fotos),
         selectinload(Articulo.estado_rel),
@@ -155,7 +158,7 @@ async def listar_articulos_publicos(
             .where(func.lower(EstadoArticulo.nombre).in_([e.lower() for e in estados_publicos]))
         )
 
-    # Filtros explícitos solicitados por el cliente
+    # Filtros explícitos
     if estado:
         stmt = (
             stmt.join(
@@ -200,10 +203,10 @@ async def listar_articulos_publicos(
         tipo_obj = await db.get(TipoArticulo, art.id_tipo)
         tipo_nombre = tipo_obj.nombre if tipo_obj else "N/A"
 
-        # Fotos
-        fotos_urls = [f.url for f in art.fotos] if art.fotos else []
+        # Fotos (si existe relación)
+        fotos_urls = [f.url for f in getattr(art, "fotos", [])] if getattr(art, "fotos", None) else []
 
-        # Inventario venta
+        # Inventario
         inv = (
             await db.execute(
                 select(InventarioVenta).where(
@@ -222,9 +225,7 @@ async def listar_articulos_publicos(
                 tipo_nombre=tipo_nombre,
                 descripcion=art.descripcion,
                 valor_estimado=float(art.valor_estimado),
-                valor_aprobado=float(art.valor_aprobado)
-                if art.valor_aprobado
-                else None,
+                valor_aprobado=float(art.valor_aprobado) if art.valor_aprobado else None,
                 condicion=art.condicion,
                 estado=estado_nombre,
                 fotos=fotos_urls,
@@ -268,12 +269,8 @@ async def obtener_articulo_detalle(
     if not puede_ver_todos:
         estado_obj = await db.get(EstadoArticulo, articulo.id_estado)
         estados_publicos = ["en_inventario", "en_venta", "disponible"]
-        if not estado_obj or estado_obj.nombre.lower() not in [
-            e.lower() for e in estados_publicos
-        ]:
-            raise HTTPException(
-                status_code=403, detail="No tienes permiso para ver este artículo"
-            )
+        if not estado_obj or estado_obj.nombre.lower() not in [e.lower() for e in estados_publicos]:
+            raise HTTPException(status_code=403, detail="No tienes permiso para ver este artículo")
 
     # Estado
     estado_obj = await db.get(EstadoArticulo, articulo.id_estado)
@@ -283,7 +280,7 @@ async def obtener_articulo_detalle(
     tipo_obj = await db.get(TipoArticulo, articulo.id_tipo)
     tipo_nombre = tipo_obj.nombre if tipo_obj else "N/A"
 
-    # Fotos (ordenadas)
+    # Fotos (ordenadas) — usando el modelo importado como ArticuloFoto (o alias)
     fotos = (
         await db.execute(
             select(ArticuloFoto)
@@ -293,7 +290,7 @@ async def obtener_articulo_detalle(
     ).scalars().all()
     fotos_urls = [f.url for f in fotos]
 
-    # Info de inventario
+    # Inventario
     inv = (
         await db.execute(
             select(InventarioVenta).where(InventarioVenta.id_articulo == id_articulo)
@@ -311,17 +308,13 @@ async def obtener_articulo_detalle(
         tipo_nombre=tipo_nombre,
         descripcion=articulo.descripcion,
         valor_estimado=float(articulo.valor_estimado),
-        valor_aprobado=float(articulo.valor_aprobado)
-        if articulo.valor_aprobado
-        else None,
+        valor_aprobado=float(articulo.valor_aprobado) if articulo.valor_aprobado else None,
         condicion=articulo.condicion,
         estado=estado_nombre,
         fotos=fotos_urls,
         precio_venta=precio_venta,
         disponible_compra=disponible_compra,
-        fecha_ingreso_inventario=fecha_ingreso_inventario.isoformat()
-        if fecha_ingreso_inventario
-        else None,
+        fecha_ingreso_inventario=fecha_ingreso_inventario.isoformat() if fecha_ingreso_inventario else None,
     )
 
 
@@ -366,9 +359,7 @@ async def comprar_articulo(
     ).scalar_one_or_none()
 
     if not inv:
-        raise HTTPException(
-            status_code=400, detail="Este artículo no está disponible para venta"
-        )
+        raise HTTPException(status_code=400, detail="Este artículo no está disponible para venta")
 
     # Verificar estado
     if inv.estado not in ["disponible", "en_venta"]:
@@ -404,10 +395,8 @@ async def comprar_articulo(
         modulo="ArticulosPublicos",
         fecha_hora=datetime.utcnow(),
         detalle=f"Compra de artículo {id_articulo} por usuario {user.ID_Usuario}",
-        old_values='{"estado":"%s"}' % ("en_venta" if inv else "N/A"),
-        new_values='{"estado":"vendido","precio_venta":%s}' % (
-            float(inv.precio_venta or 0)
-        ),
+        old_values='{"estado":"en_venta"}',
+        new_values='{"estado":"vendido","precio_venta":%s}' % (float(inv.precio_venta or 0)),
     )
     db.add(aud)
 
@@ -417,9 +406,7 @@ async def comprar_articulo(
         await db.refresh(articulo)
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=500, detail=f"Error al procesar la compra: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al procesar la compra: {str(e)}")
 
     return ComprarArticuloOut(
         id_articulo=id_articulo,
