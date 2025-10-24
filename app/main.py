@@ -60,7 +60,7 @@ from app.api.routers.contratos import router_prestamos, router_contratos
 
 # Admin solicitudes
 from app.api.routers.admin_solicitudes import router as admin_solicitudes_router
-
+from app.api.routers.articulos_publicos import router as articulos_publicos_router
 # Auditoría
 from app.api.routers.auditoria import router as auditoria_router
 
@@ -167,6 +167,7 @@ app.include_router(router_contratos)
 app.include_router(mis_prestamos_pagos_router)
 app.include_router(auditoria_router)
 app.include_router(admin_solicitudes_router)
+app.include_router(articulos_publicos_router)
 if seguridad_router:
     app.include_router(seguridad_router)
 try:
