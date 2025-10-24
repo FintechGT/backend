@@ -1,15 +1,14 @@
+# app/services/auth_service.py
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from passlib.context import CryptContext
 
 from app.db.models.user import User
 from app.schemas.auth import UserRegister
+from app.core.security import hash_password, verify_password  # usar helpers centralizados
 
-# Config de hashing (bcrypt)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-MAX_BCRYPT_LEN = 72  # límite real de bcrypt en bytes
+MAX_BCRYPT_WARN = 72  # solo advertencia (no bloquea)
 
 
 class AuthService:
@@ -18,14 +17,20 @@ class AuthService:
         """
         Crea un usuario con contraseña (registro normal).
         - Normaliza email/username
-        - Valida longitud máxima soportada por bcrypt (72 bytes)
         - Evita duplicados case-insensitive
+        - Hashea con bcrypt_sha256 (definido en app/core/security.py)
         """
         email = (data.email or "").strip().lower()
         username = (data.username or "").strip()
+        password = data.password or ""
 
-        if len(data.password.encode("utf-8")) > MAX_BCRYPT_LEN:
-            raise ValueError("La contraseña no puede superar 72 bytes.")
+        # (Opcional) Advertencia de diagnóstico si supera 72 bytes (no bloquea)
+        try:
+            b = len(password.encode("utf-8"))
+            if b > MAX_BCRYPT_WARN:
+                print(f"[AuthService.register_user] Advertencia: password con {b} bytes (>72).")
+        except Exception:
+            pass
 
         # ¿Existe ya el correo? (case-insensitive)
         exists = await db.execute(
@@ -34,14 +39,15 @@ class AuthService:
         if exists.scalar_one_or_none():
             raise ValueError("El correo ya está en uso")
 
-        hashed_password = pwd_context.hash(data.password)
+        # Hash con política central (bcrypt_sha256 preferido)
+        hashed_password = hash_password(password)
 
         new_user = User(
             Nombre=username,
             Correo=email,
             Contrasena_hash=hashed_password,
-            Verificado=True,    # puedes poner False si prefieres verificación por correo
-            Estado_Activo=True, # en alta por defecto
+            Verificado=True,     # ajusta según tu flujo
+            Estado_Activo=True,  # en alta por defecto
         )
         db.add(new_user)
         await db.commit()
@@ -78,7 +84,8 @@ class AuthService:
             return None
 
         try:
-            ok = pwd_context.verify(password, stored_hash)
+            # Verificación con política central (soporta bcrypt_sha256 y bcrypt legado)
+            ok = verify_password(password, stored_hash)
         except Exception:
             # Hash malformado/algoritmo distinto → tratar como credenciales inválidas
             return None
