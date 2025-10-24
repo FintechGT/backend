@@ -16,10 +16,6 @@ from app.utils.email_validators import is_disposable_domain, has_mx_records
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-# ❌ Quita esto (ya no lo necesitamos):
-# from passlib.context import CryptContext
-# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserResponse)
@@ -38,10 +34,6 @@ async def register_user(data: UserRegister, db: AsyncSession = Depends(get_db)):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Solo correos @{allowed}"
             )
-
-    # Validaciones de correo opcionales en prod:
-    # if is_disposable_domain(domain): ...
-    # if not has_mx_records(domain): ...
 
     try:
         normalized = UserRegister(
