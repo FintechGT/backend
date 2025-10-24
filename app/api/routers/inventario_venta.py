@@ -1,592 +1,202 @@
-# app/api/routers/inventario_venta.py
-from datetime import date, datetime, timezone
+# app/api/routers/prestamos_evaluar_estado.py
+from datetime import date, timedelta, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.core.security import get_current_user
 
 # Modelos
-from app.db.models.inventario_venta import InventarioVenta
-from app.db.models.estado_inventario import EstadoInventario
-from app.db.models.comprobante import Comprobante
-from app.db.models.articulo import Articulo
+from app.db.models.prestamo import Prestamo
+from app.db.models.estado_prestamo import EstadoPrestamo
+from app.db.models.configuraciones_generales import ConfiguracionesGenerales
 from app.db.models.user import User
-
-# Schemas
-from app.schemas.inventario_venta import (
-    InventarioCrearIn, InventarioCrearOut,
-    InventarioActualizarIn, InventarioActualizarOut,
-    InventarioVentaIn, InventarioVentaOut, CompradorOut,
-    InventarioListItemOut, InventarioListResponse,
-    InventarioDetalleOut
-)
 
 # Utils
 from app.utils.auditoria import registrar_auditoria
 from app.utils.roles import usuario_tiene_algun_rol
 
 
-router = APIRouter(prefix="/inventario", tags=["Inventario"])
+router = APIRouter(prefix="/prestamos", tags=["Préstamos - Evaluar Estado"])
 
-
-# ============================================================
-# HELPERS
-# ============================================================
+# =========================
+# Helpers de utilería
+# =========================
 def _resolve_user_id(u: User) -> int:
-    """Devuelve el id del usuario aunque el atributo se llame ID_Usuario, id_usuario o id."""
+    """Devuelve el id del usuario aunque se llame ID_Usuario, id_usuario o id."""
     for attr in ("ID_Usuario", "id_usuario", "id"):
         val = getattr(u, attr, None)
         if isinstance(val, int):
             return val
     raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario")
 
+async def _get_cfg_int(db: AsyncSession, clave: str, default: int) -> int:
+    rs = await db.execute(select(ConfiguracionesGenerales).where(func.lower(ConfiguracionesGenerales.clave) == clave.lower()))
+    cfg = rs.scalar_one_or_none()
+    if not cfg:
+        return default
+    try:
+        return int(cfg.valor)
+    except (TypeError, ValueError):
+        return default
 
-def _ensure_id_usuario_attr(u: User) -> None:
-    """Parche para compatibilidad con utils.roles"""
-    if not hasattr(u, "id_usuario"):
-        setattr(u, "id_usuario", _resolve_user_id(u))
-
-
-async def _obtener_estado_inventario(db: AsyncSession, nombre: str) -> EstadoInventario:
-    """Obtiene un estado de inventario por nombre (case-insensitive)."""
-    result = await db.execute(
-        select(EstadoInventario).where(func.lower(EstadoInventario.nombre) == nombre.lower())
+async def _get_estado_prestamo(db: AsyncSession, nombre: str) -> Optional[EstadoPrestamo]:
+    rs = await db.execute(
+        select(EstadoPrestamo).where(func.lower(EstadoPrestamo.nombre) == nombre.lower())
     )
-    estado = result.scalar_one_or_none()
-    if not estado:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Estado de inventario '{nombre}' no existe en catálogo"
-        )
-    return estado
+    return rs.scalar_one_or_none()
+
+def _dias_mora(prestamo: Prestamo, fecha_corte: date, dias_gracia: int) -> int:
+    """
+    Días de mora contados a partir de (fecha_vencimiento + gracia) + 1 si sobrepasa esa frontera.
+    Si está dentro del plazo/gracia => 0.
+    """
+    frontera = prestamo.fecha_vencimiento + timedelta(days=dias_gracia)
+    if fecha_corte <= frontera:
+        return 0
+    return (fecha_corte - frontera).days
+
+async def _derivar_estado(prestamo: Prestamo, fecha_corte: date, db: AsyncSession) -> dict:
+    """
+    Deriva el estado *sugerido* del préstamo usando los umbrales de configuración.
+    Estados válidos: activo, en_mora_parcial, en_mora_grave, incobrable, cancelado, liquidado.
+    """
+    # Si no hay deuda, considerar liquidado/cancelado
+    try:
+        deuda_actual = Decimal(str(prestamo.deuda_actual))
+    except Exception:
+        deuda_actual = Decimal("0")
+    if deuda_actual <= Decimal("0"):
+        return {"codigo": "cancelado", "razon": "deuda_cero", "dias_mora": 0}
+
+    # Umbrales
+    dias_gracia = await _get_cfg_int(db, "GRACIA_DIAS", 3)
+    umbral_mora_grave = await _get_cfg_int(db, "UMBRAL_MORA_GRAVE_DIAS", 15)
+    umbral_incobrable = await _get_cfg_int(db, "UMBRAL_INCOBRABLE_DIAS", 60)
+
+    # Dentro del plazo o gracia
+    dm = _dias_mora(prestamo, fecha_corte, dias_gracia)
+    if dm <= 0:
+        return {"codigo": "activo", "razon": "en_plazo_o_gracia", "dias_mora": 0}
+
+    # Clasificación por umbrales
+    if dm >= umbral_incobrable:
+        return {"codigo": "incobrable", "razon": "mora_critica", "dias_mora": dm}
+    if dm >= umbral_mora_grave:
+        return {"codigo": "en_mora_grave", "razon": "mora_severa", "dias_mora": dm}
+    return {"codigo": "en_mora_parcial", "razon": "mora_leve", "dias_mora": dm}
 
 
 # ============================================================
-# POST - CREAR (Ingresar artículo al inventario)
-# Permisos: ADMINISTRADOR, SUPERVISOR
-# ============================================================
-@router.post(
-    "",
-    response_model=InventarioCrearOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Ingresar artículo al inventario",
-    description=(
-        "Crea un nuevo registro de inventario para un artículo. "
-        "El artículo debe existir y no tener ya un registro de inventario activo (1:1). "
-        "**Permisos:** ADMINISTRADOR, SUPERVISOR"
-    )
-)
-async def crear_inventario(
-    payload: InventarioCrearIn,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    user_id = _resolve_user_id(current_user)
-    _ensure_id_usuario_attr(current_user)
-
-    # Permisos
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMINISTRADOR", "SUPERVISOR"]):
-        raise HTTPException(status_code=403, detail="Requiere rol ADMINISTRADOR o SUPERVISOR")
-
-    # Validar que el artículo exista
-    result_art = await db.execute(
-        select(Articulo).where(Articulo.id_articulo == payload.id_articulo)
-    )
-    articulo = result_art.scalar_one_or_none()
-    if not articulo:
-        raise HTTPException(status_code=404, detail=f"Artículo {payload.id_articulo} no encontrado")
-
-    # Validar 1:1 - no debe existir inventario previo
-    result_inv = await db.execute(
-        select(InventarioVenta).where(InventarioVenta.id_articulo == payload.id_articulo)
-    )
-    if result_inv.scalar_one_or_none():
-        raise HTTPException(
-            status_code=409,
-            detail=f"El artículo {payload.id_articulo} ya tiene un registro de inventario"
-        )
-
-    # Estado inicial: disponible
-    estado_disponible = await _obtener_estado_inventario(db, "disponible")
-
-    # Precio actual por defecto = precio_base
-    precio_actual = payload.precio_actual if payload.precio_actual is not None else payload.precio_base
-
-    # Crear registro
-    nuevo_inventario = InventarioVenta(
-        id_articulo=payload.id_articulo,
-        id_estado=estado_disponible.id_estado_inventario,
-        precio_base=payload.precio_base,
-        precio_actual=precio_actual,
-        dias_en_bodega=0,
-        fecha_ingreso=date.today(),
-    )
-    db.add(nuevo_inventario)
-    await db.flush()
-
-    # Auditoría
-    await registrar_auditoria(
-        db=db,
-        usuario_id=user_id,
-        accion="INVENTARIO_CREAR",
-        modulo="Inventario",
-        detalle=f"Artículo {payload.id_articulo} ingresado al inventario (ID: {nuevo_inventario.id_inventario})",
-        valores_nuevos={
-            "id_inventario": nuevo_inventario.id_inventario,
-            "id_articulo": payload.id_articulo,
-            "precio_base": float(payload.precio_base),
-            "precio_actual": float(precio_actual),
-            "nota_ingreso": payload.nota_ingreso,
-        }
-    )
-
-    await db.commit()
-    await db.refresh(nuevo_inventario)
-
-    return InventarioCrearOut(
-        id_inventario=nuevo_inventario.id_inventario,
-        id_articulo=nuevo_inventario.id_articulo,
-        estado="disponible",
-        precio_base=float(nuevo_inventario.precio_base),
-        precio_actual=float(nuevo_inventario.precio_actual),
-        dias_en_bodega=nuevo_inventario.dias_en_bodega,
-        fecha_ingreso=nuevo_inventario.fecha_ingreso,
-    )
-
-
-# ============================================================
-# GET - LISTAR (con filtros y paginación)
-# Permisos: ADMINISTRADOR, SUPERVISOR, VALUADOR, CAJERO
-# ============================================================
-@router.get(
-    "",
-    response_model=InventarioListResponse,
-    summary="Listar inventario con filtros",
-    description=(
-        "Lista items del inventario con filtros opcionales. "
-        "**Permisos:** ADMINISTRADOR, SUPERVISOR, VALUADOR, CAJERO"
-    )
-)
-async def listar_inventario(
-    estado: Optional[str] = Query(None, description="Filtrar por estado"),
-    desde: Optional[date] = Query(None, description="Fecha de ingreso desde"),
-    hasta: Optional[date] = Query(None, description="Fecha de ingreso hasta"),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    user_id = _resolve_user_id(current_user)
-    _ensure_id_usuario_attr(current_user)
-
-    # Permisos de lectura
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMINISTRADOR", "SUPERVISOR", "VALUADOR", "CAJERO"]):
-        raise HTTPException(status_code=403, detail="Sin permisos de lectura")
-
-    # Query base
-    stmt = select(InventarioVenta).order_by(InventarioVenta.id_inventario.desc())
-
-    # Filtros
-    if estado:
-        estado_obj = await _obtener_estado_inventario(db, estado)
-        stmt = stmt.where(InventarioVenta.id_estado == estado_obj.id_estado_inventario)
-
-    if desde:
-        stmt = stmt.where(InventarioVenta.fecha_ingreso >= desde)
-
-    if hasta:
-        stmt = stmt.where(InventarioVenta.fecha_ingreso <= hasta)
-
-    # Total
-    count_result = await db.execute(
-        select(func.count()).select_from(stmt.subquery())
-    )
-    total = count_result.scalar() or 0
-
-    # Paginación
-    stmt = stmt.limit(limit).offset(offset)
-    result = await db.execute(stmt)
-    items_db = result.scalars().all()
-
-    # Construir respuesta
-    items = []
-    for inv in items_db:
-        # Estado
-        result_estado = await db.execute(
-            select(EstadoInventario).where(EstadoInventario.id_estado_inventario == inv.id_estado)
-        )
-        estado_obj = result_estado.scalar_one_or_none()
-        estado_nombre = estado_obj.nombre if estado_obj else "desconocido"
-
-        # Descripción del artículo
-        result_art = await db.execute(
-            select(Articulo.descripcion).where(Articulo.id_articulo == inv.id_articulo)
-        )
-        descripcion = result_art.scalar_one_or_none()
-
-        items.append(
-            InventarioListItemOut(
-                id_inventario=inv.id_inventario,
-                id_articulo=inv.id_articulo,
-                estado=estado_nombre,
-                precio_base=float(inv.precio_base),
-                precio_actual=float(inv.precio_actual),
-                dias_en_bodega=inv.dias_en_bodega,
-                fecha_ingreso=inv.fecha_ingreso,
-                descripcion_articulo=descripcion,
-            )
-        )
-
-    return InventarioListResponse(
-        items=items,
-        total=total,
-        limit=limit,
-        offset=offset
-    )
-
-
-# ============================================================
-# GET - DETALLE (individual)
-# Permisos: ADMINISTRADOR, SUPERVISOR, VALUADOR, CAJERO
-# ============================================================
-@router.get(
-    "/{id_inventario}",
-    response_model=InventarioDetalleOut,
-    summary="Obtener detalle de un item de inventario",
-    description="**Permisos:** ADMINISTRADOR, SUPERVISOR, VALUADOR, CAJERO"
-)
-async def obtener_inventario(
-    id_inventario: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    _ensure_id_usuario_attr(current_user)
-
-    # Permisos
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMINISTRADOR", "SUPERVISOR", "VALUADOR", "CAJERO"]):
-        raise HTTPException(status_code=403, detail="Sin permisos de lectura")
-
-    # Cargar inventario
-    result = await db.execute(
-        select(InventarioVenta).where(InventarioVenta.id_inventario == id_inventario)
-    )
-    inventario = result.scalar_one_or_none()
-    if not inventario:
-        raise HTTPException(status_code=404, detail="Inventario no encontrado")
-
-    # Estado
-    result_estado = await db.execute(
-        select(EstadoInventario).where(EstadoInventario.id_estado_inventario == inventario.id_estado)
-    )
-    estado = result_estado.scalar_one_or_none()
-    estado_nombre = estado.nombre if estado else "desconocido"
-
-    # Artículo relacionado
-    result_art = await db.execute(
-        select(Articulo).where(Articulo.id_articulo == inventario.id_articulo)
-    )
-    articulo = result_art.scalar_one_or_none()
-    articulo_data = None
-    if articulo:
-        articulo_data = {
-            "id_articulo": articulo.id_articulo,
-            "descripcion": articulo.descripcion,
-            "valor_estimado": float(articulo.valor_estimado) if articulo.valor_estimado else None,
-        }
-
-    return InventarioDetalleOut(
-        id_inventario=inventario.id_inventario,
-        id_articulo=inventario.id_articulo,
-        estado=estado_nombre,
-        precio_base=float(inventario.precio_base),
-        precio_actual=float(inventario.precio_actual),
-        dias_en_bodega=inventario.dias_en_bodega,
-        fecha_ingreso=inventario.fecha_ingreso,
-        articulo=articulo_data,
-        ultima_modificacion=None,
-    )
-
-
-# ============================================================
-# PATCH - ACTUALIZAR (precio, estado)
-# Permisos: ADMINISTRADOR, SUPERVISOR
-# ============================================================
-@router.patch(
-    "/{id_inventario}",
-    response_model=InventarioActualizarOut,
-    summary="Actualizar inventario (precio, estado)",
-    description="**Permisos:** ADMINISTRADOR, SUPERVISOR"
-)
-async def actualizar_inventario(
-    id_inventario: int,
-    payload: InventarioActualizarIn,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    user_id = _resolve_user_id(current_user)
-    _ensure_id_usuario_attr(current_user)
-
-    # Permisos
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMINISTRADOR", "SUPERVISOR"]):
-        raise HTTPException(status_code=403, detail="Requiere rol ADMINISTRADOR o SUPERVISOR")
-
-    # Cargar inventario con lock
-    result = await db.execute(
-        select(InventarioVenta)
-        .where(InventarioVenta.id_inventario == id_inventario)
-        .with_for_update()
-    )
-    inventario = result.scalar_one_or_none()
-    if not inventario:
-        raise HTTPException(status_code=404, detail="Inventario no encontrado")
-
-    # Validar que al menos un campo venga
-    if all(getattr(payload, f) is None for f in ["precio_actual", "estado", "nota"]):
-        raise HTTPException(status_code=400, detail="Debe enviar al menos un campo a actualizar")
-
-    # Guardar valores anteriores
-    result_estado = await db.execute(
-        select(EstadoInventario).where(EstadoInventario.id_estado_inventario == inventario.id_estado)
-    )
-    estado_anterior = result_estado.scalar_one_or_none()
-    
-    valores_anteriores = {
-        "precio_actual": float(inventario.precio_actual),
-        "estado": estado_anterior.nombre if estado_anterior else None,
-    }
-
-    # Aplicar cambios
-    cambios = {}
-
-    if payload.precio_actual is not None:
-        inventario.precio_actual = payload.precio_actual
-        cambios["precio_actual"] = float(payload.precio_actual)
-
-    if payload.estado is not None:
-        estado_nuevo = await _obtener_estado_inventario(db, payload.estado)
-        inventario.id_estado = estado_nuevo.id_estado_inventario
-        cambios["estado"] = estado_nuevo.nombre
-
-    if payload.nota:
-        cambios["nota"] = payload.nota
-
-    await db.flush()
-
-    # Auditoría
-    await registrar_auditoria(
-        db=db,
-        usuario_id=user_id,
-        accion="INVENTARIO_ACTUALIZAR",
-        modulo="Inventario",
-        detalle=f"Inventario {id_inventario} actualizado",
-        valores_anteriores=valores_anteriores,
-        valores_nuevos=cambios,
-    )
-
-    await db.commit()
-    await db.refresh(inventario)
-
-    # Estado final
-    result_estado_final = await db.execute(
-        select(EstadoInventario).where(EstadoInventario.id_estado_inventario == inventario.id_estado)
-    )
-    estado_final = result_estado_final.scalar_one_or_none()
-
-    return InventarioActualizarOut(
-        id_inventario=inventario.id_inventario,
-        estado=estado_final.nombre if estado_final else "desconocido",
-        precio_actual=float(inventario.precio_actual),
-        dias_en_bodega=inventario.dias_en_bodega,
-    )
-
-
-# ============================================================
-# POST - REGISTRAR VENTA
-# Permisos: ADMINISTRADOR, SUPERVISOR, CAJERO
+# ENDPOINT: evaluar y (opcional) actualizar el estado del préstamo
 # ============================================================
 @router.post(
-    "/venta",
-    response_model=InventarioVentaOut,
+    "/{id_prestamo}/evaluar-estado",
     status_code=status.HTTP_200_OK,
-    summary="Registrar venta de un artículo del inventario",
-    description="**Permisos:** ADMINISTRADOR, SUPERVISOR, CAJERO"
+    summary="Evalúa el estado del préstamo y lo actualiza si corresponde",
+    description=(
+        "Calcula el estado sugerido del préstamo (activo, en_mora_parcial, en_mora_grave, incobrable, cancelado) "
+        "en función de la deuda, fecha de vencimiento y umbrales configurados. "
+        "Si el estado actual difiere del sugerido, lo actualiza."
+    ),
 )
-async def registrar_venta(
-    payload: InventarioVentaIn,
+async def evaluar_estado_prestamo(
+    id_prestamo: int,
+    fecha_corte: Optional[date] = Query(default=None, description="Fecha de corte (YYYY-MM-DD). Por defecto, hoy."),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    user_id = _resolve_user_id(current_user)
-    _ensure_id_usuario_attr(current_user)
-
+    """
+    Reglas:
+    - Si deuda_actual <= 0 => cancelado
+    - Si fecha_corte <= (vencimiento + gracia) => activo
+    - Si días de mora >= UMBRAL_INCOBRABLE_DIAS => incobrable
+    - Si días de mora >= UMBRAL_MORA_GRAVE_DIAS => en_mora_grave
+    - En otro caso con mora => en_mora_parcial
+    """
     # Permisos
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMINISTRADOR", "SUPERVISOR", "CAJERO"]):
-        raise HTTPException(status_code=403, detail="Requiere rol ADMINISTRADOR, SUPERVISOR o CAJERO")
+    user_id = _resolve_user_id(current_user)
+    if not hasattr(current_user, "id_usuario"):
+        setattr(current_user, "id_usuario", user_id)
+    if not await usuario_tiene_algun_rol(current_user, db, ["ADMIN", "OPERADOR"]):
+        raise HTTPException(status_code=403, detail="Sin permiso para evaluar estado de préstamo")
 
-    # Cargar inventario con lock
-    result = await db.execute(
-        select(InventarioVenta)
-        .where(InventarioVenta.id_inventario == payload.id_inventario)
-        .with_for_update()
-    )
-    inventario = result.scalar_one_or_none()
-    if not inventario:
-        raise HTTPException(status_code=404, detail=f"Inventario {payload.id_inventario} no encontrado")
+    # Cargar préstamo
+    rs = await db.execute(select(Prestamo).where(Prestamo.id_prestamo == id_prestamo).with_for_update())
+    prestamo = rs.scalar_one_or_none()
+    if not prestamo:
+        raise HTTPException(status_code=404, detail=f"Préstamo {id_prestamo} no encontrado")
+
+    # Determinar fecha de corte
+    fc = fecha_corte or date.today()
+
+    # Derivar estado sugerido
+    sugerido = await _derivar_estado(prestamo, fc, db)
+    estado_sugerido = await _get_estado_prestamo(db, sugerido["codigo"])
+    if not estado_sugerido:
+        raise HTTPException(status_code=500, detail=f"Estado '{sugerido['codigo']}' no existe en catálogo")
 
     # Estado actual
-    result_estado = await db.execute(
-        select(EstadoInventario).where(EstadoInventario.id_estado_inventario == inventario.id_estado)
+    rs_est_act = await db.execute(
+        select(EstadoPrestamo).where(EstadoPrestamo.id_estado_prestamo == prestamo.id_estado)
     )
-    estado_actual = result_estado.scalar_one_or_none()
-    estado_nombre = estado_actual.nombre.lower() if estado_actual else ""
+    estado_actual = rs_est_act.scalar_one_or_none()
+    codigo_actual = (estado_actual.nombre if estado_actual else "").lower()
 
-    # Validación: debe estar disponible o en_venta
-    if estado_nombre == "vendido":
-        raise HTTPException(status_code=409, detail="El inventario ya está vendido")
+    # Idempotencia: no actualizar si ya coincide
+    if estado_sugerido.id_estado_prestamo == prestamo.id_estado:
+        return {
+            "id_prestamo": prestamo.id_prestamo,
+            "fecha_corte": fc,
+            "estado_actual": codigo_actual,
+            "estado_sugerido": sugerido["codigo"],
+            "dias_mora": sugerido["dias_mora"],
+            "accion": "sin_cambios",
+        }
 
-    if estado_nombre not in {"disponible", "en_venta"}:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No se puede vender desde estado '{estado_nombre}'"
-        )
-
-    # Validar ref_bancaria para transferencia/tarjeta
-    medio = (payload.medio_pago or "efectivo").lower()
-    if medio in {"transferencia", "tarjeta"} and not payload.ref_bancaria:
-        raise HTTPException(status_code=400, detail=f"ref_bancaria requerida para '{medio}'")
-
-    # Estado vendido
-    estado_vendido = await _obtener_estado_inventario(db, "vendido")
-    fecha_venta = payload.fecha_venta or date.today()
-
-    # Actualizar
+    # Actualizar estado
     valores_anteriores = {
-        "estado": estado_nombre,
-        "precio_actual": float(inventario.precio_actual),
+        "id_estado": prestamo.id_estado,
+        "estado_codigo": codigo_actual,
     }
-
-    inventario.id_estado = estado_vendido.id_estado_inventario
-    inventario.precio_actual = payload.precio_venta
-    await db.flush()
-
-    # Comprobante opcional
-    if payload.comprobante_url:
-        db.add(Comprobante(
-            id_inventario=inventario.id_inventario,
-            url=str(payload.comprobante_url)
-        ))
+    prestamo.id_estado = estado_sugerido.id_estado_prestamo
+    prestamo.updated_at = datetime.now(timezone.utc)
 
     # Auditoría
     await registrar_auditoria(
         db=db,
         usuario_id=user_id,
-        accion="INVENTARIO_VENDER",
-        modulo="Inventario",
-        detalle=f"Inventario {inventario.id_inventario} vendido por Q{float(payload.precio_venta):.2f}",
+        accion="EVALUAR_ESTADO_PRESTAMO",
+        modulo="Prestamo",
+        detalle=(
+            f"Estado préstamo {prestamo.id_prestamo}: {codigo_actual or 'desconocido'} -> {sugerido['codigo']} "
+            f"({sugerido['dias_mora']} días mora)"
+        ),
         valores_anteriores=valores_anteriores,
         valores_nuevos={
-            "estado": "vendido",
-            "precio_venta": float(payload.precio_venta),
-            "fecha_venta": fecha_venta.isoformat(),
-            "medio_pago": medio,
-            "comprador": payload.comprador_nombre,
+            "id_estado": prestamo.id_estado,
+            "estado_codigo": sugerido["codigo"],
+            "fecha_corte": str(fc),
         }
     )
 
-    await db.commit()
-    await db.refresh(inventario)
+    # Commit
+    try:
+        await db.commit()
+        await db.refresh(prestamo)
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar el cambio de estado: {str(e)}")
 
-    # Respuesta
-    comprador = None
-    if payload.comprador_nombre or payload.comprador_nit:
-        comprador = CompradorOut(nombre=payload.comprador_nombre, nit=payload.comprador_nit)
-
-    return InventarioVentaOut(
-        id_inventario=inventario.id_inventario,
-        estado="vendido",
-        precio_venta=float(payload.precio_venta),
-        fecha_venta=fecha_venta,
-        medio_pago=medio,
-        ref_bancaria=payload.ref_bancaria,
-        comprador=comprador,
-        comprobante_url=str(payload.comprobante_url) if payload.comprobante_url else None,
-        nota=payload.nota,
-    )
-
-
-# ============================================================
-# DELETE - ELIMINAR (solo si no está vendido)
-# Permisos: ADMINISTRADOR
-# ============================================================
-@router.delete(
-    "/{id_inventario}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Eliminar registro de inventario",
-    description="**Permisos:** ADMINISTRADOR únicamente"
-)
-async def eliminar_inventario(
-    id_inventario: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    user_id = _resolve_user_id(current_user)
-    _ensure_id_usuario_attr(current_user)
-
-    # Permisos: solo ADMINISTRADOR
-    if not await usuario_tiene_algun_rol(current_user, db, ["ADMINISTRADOR"]):
-        raise HTTPException(status_code=403, detail="Requiere rol ADMINISTRADOR")
-
-    # Cargar inventario
-    result = await db.execute(
-        select(InventarioVenta).where(InventarioVenta.id_inventario == id_inventario)
-    )
-    inventario = result.scalar_one_or_none()
-    if not inventario:
-        raise HTTPException(status_code=404, detail="Inventario no encontrado")
-
-    # Validar estado: NO eliminar si está vendido
-    result_estado = await db.execute(
-        select(EstadoInventario).where(EstadoInventario.id_estado_inventario == inventario.id_estado)
-    )
-    estado = result_estado.scalar_one_or_none()
-    if estado and estado.nombre.lower() == "vendido":
-        raise HTTPException(
-            status_code=409,
-            detail="No se puede eliminar un inventario vendido"
-        )
-
-    # Guardar datos para auditoría
-    valores_anteriores = {
-        "id_inventario": inventario.id_inventario,
-        "id_articulo": inventario.id_articulo,
-        "estado": estado.nombre if estado else None,
-        "precio_base": float(inventario.precio_base),
-        "precio_actual": float(inventario.precio_actual),
+    return {
+        "id_prestamo": prestamo.id_prestamo,
+        "fecha_corte": fc,
+        "estado_anterior": codigo_actual,
+        "estado_nuevo": sugerido["codigo"],
+        "dias_mora": sugerido["dias_mora"],
+        "accion": "actualizado",
     }
-
-    # Eliminar comprobantes asociados
-    await db.execute(
-        delete(Comprobante).where(Comprobante.id_inventario == id_inventario)
-    )
-
-    # Eliminar inventario
-    await db.delete(inventario)
-
-    # Auditoría
-    await registrar_auditoria(
-        db=db,
-        usuario_id=user_id,
-        accion="INVENTARIO_ELIMINAR",
-        modulo="Inventario",
-        detalle=f"Inventario {id_inventario} eliminado (artículo {inventario.id_articulo})",
-        valores_anteriores=valores_anteriores,
-        valores_nuevos=None,
-    )
-
-    await db.commit()
-    return None
