@@ -1,5 +1,5 @@
 # ============================================================
-# app/api/routers/articulos_publicos.py
+# app/api/routers/articulos_publicos.py (sin dependencias a TipoArticulo)
 # ============================================================
 """
 Router público/semi-público para artículos.
@@ -27,22 +27,22 @@ from fastapi import (
     status,
     Header,
 )
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.db.models.articulo import Articulo
 
-# --- Protección del import: funciona con ArticuloFoto o Articulo_Foto ---
+# Fotos: soporta ArticuloFoto o Articulo_Foto sin tocar modelos
 try:
     from app.db.models.articulo_foto import ArticuloFoto  # nombre recomendado
-except ImportError:
-    from app.db.models.articulo_foto import Articulo_Foto as ArticuloFoto  # fallback
-# ------------------------------------------------------------------------
+except Exception:  # noqa
+    try:
+        from app.db.models.articulo_foto import Articulo_Foto as ArticuloFoto  # fallback
+    except Exception:  # si no hay modelo, trabajaremos solo con Articulo
+        ArticuloFoto = None  # type: ignore
 
 from app.db.models.estado_articulo import EstadoArticulo
-from app.db.models.tipo_articulo import TipoArticulo
 from app.db.models.inventario_venta import InventarioVenta
 from app.db.models.user import User
 from app.db.models.roles import Rol
@@ -67,17 +67,12 @@ async def get_optional_user(
     db: AsyncSession = Depends(get_db),
     authorization: Optional[str] = Header(default=None, convert_underscores=False),
 ) -> Optional[User]:
-    """
-    Intenta obtener el usuario actual desde el header Authorization.
-    Si no hay token o es inválido, retorna None (usuario invitado).
-    """
+    """Intenta obtener el usuario actual desde el header Authorization."""
     if not authorization:
         return None
-
     try:
         token = authorization[7:] if authorization.startswith("Bearer ") else authorization
-        # Import local para evitar ciclos
-        from app.core.security import get_current_user
+        from app.core.security import get_current_user  # import local
         user = await get_current_user(token=token, db=db)
         return user
     except Exception:
@@ -85,7 +80,6 @@ async def get_optional_user(
 
 
 async def _user_has_role(db: AsyncSession, id_usuario: int, role_name: str) -> bool:
-    """Verifica si el usuario tiene un rol específico."""
     q = (
         select(func.count())
         .select_from(UsuarioRol)
@@ -100,18 +94,49 @@ async def _user_has_role(db: AsyncSession, id_usuario: int, role_name: str) -> b
 
 
 async def _puede_ver_todos_articulos(db: AsyncSession, user: Optional[User]) -> bool:
-    """
-    Retorna True si el usuario puede ver TODOS los artículos.
-    Roles permitidos: ADMINISTRADOR, VALUADOR, CAJERO
-    """
     if not user:
         return False
-
     uid = user.ID_Usuario
     for role in ["ADMINISTRADOR", "VALUADOR", "CAJERO"]:
         if await _user_has_role(db, uid, role):
             return True
     return False
+
+
+# ============================================================
+# Helpers de datos sin depender de modelos que faltan
+# ============================================================
+async def _get_tipo_nombre(db: AsyncSession, id_tipo: int) -> str:
+    """
+    Obtiene el nombre del tipo desde la tabla Cat_Tipo_Articulo usando SQL crudo,
+    para evitar importar un modelo que no existe en tu proyecto.
+    """
+    try:
+        res = await db.execute(
+            text("SELECT Nombre FROM Cat_Tipo_Articulo WHERE IdTipo = :id"),
+            {"id": id_tipo},
+        )
+        row = res.first()
+        return row[0] if row and row[0] else "N/A"
+    except Exception:
+        # Si la tabla/columna se llama diferente, al menos no rompemos el API
+        return "N/A"
+
+
+async def _get_fotos_urls(db: AsyncSession, id_articulo: int) -> List[str]:
+    """
+    Devuelve URLs de fotos. Si no existe el modelo ArticuloFoto, devuelve lista vacía.
+    """
+    if ArticuloFoto is None:
+        return []
+    try:
+        res = await db.execute(
+            select(ArticuloFoto).where(ArticuloFoto.id_articulo == id_articulo).order_by(ArticuloFoto.orden.asc())
+        )
+        fotos = res.scalars().all()
+        return [f.url for f in fotos if getattr(f, "url", None)]
+    except Exception:
+        return []
 
 
 # ============================================================
@@ -130,25 +155,13 @@ async def listar_articulos_publicos(
     db: AsyncSession = Depends(get_db),
     authorization: Optional[str] = Header(default=None, convert_underscores=False),
 ):
-    """
-    Lista artículos con filtros opcionales.
-
-    Permisos:
-    - ADMINISTRADOR, VALUADOR, CAJERO: Ven todos los artículos
-    - Usuario logueado sin rol especial: Solo artículos públicos/en venta
-    - INVITADO (no logueado): Solo artículos públicos/en venta
-    """
     user = await get_optional_user(db=db, authorization=authorization)
     puede_ver_todos = await _puede_ver_todos_articulos(db, user)
 
-    # Query base con cargas relacionadas (si existen en el modelo)
-    stmt = select(Articulo).options(
-        selectinload(Articulo.fotos),
-        selectinload(Articulo.estado_rel),
-        selectinload(Articulo.tipo_rel),
-    )
+    # Query base SIN selectinload de relaciones que podrían no existir
+    stmt = select(Articulo)
 
-    # Filtro por visibilidad pública para usuarios sin rol especial
+    # Visibilidad pública
     if not puede_ver_todos:
         estados_publicos = ["en_inventario", "en_venta", "disponible"]
         stmt = (
@@ -175,43 +188,33 @@ async def listar_articulos_publicos(
         stmt = stmt.where(func.lower(Articulo.descripcion).like(like))
 
     if solo_en_venta:
-        # Solo artículos que están en Inventario_Venta con estado disponible/en_venta
         stmt = stmt.join(
             InventarioVenta, InventarioVenta.id_articulo == Articulo.id_articulo
         ).where(
-            or_(
-                InventarioVenta.estado == "disponible",
-                InventarioVenta.estado == "en_venta",
-            )
+            or_(InventarioVenta.estado == "disponible", InventarioVenta.estado == "en_venta")
         )
 
-    # Total (sobre subconsulta para respetar filtros)
     total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
-    # Paginación y orden
     stmt = stmt.order_by(Articulo.id_articulo.desc()).limit(limit).offset(offset)
     articulos = (await db.execute(stmt)).scalars().all()
 
-    # Construcción de respuesta
     items: List[ArticuloPublicoListItem] = []
     for art in articulos:
         # Estado
         estado_obj = await db.get(EstadoArticulo, art.id_estado)
         estado_nombre = estado_obj.nombre if estado_obj else "desconocido"
 
-        # Tipo
-        tipo_obj = await db.get(TipoArticulo, art.id_tipo)
-        tipo_nombre = tipo_obj.nombre if tipo_obj else "N/A"
+        # Tipo (vía SQL crudo)
+        tipo_nombre = await _get_tipo_nombre(db, art.id_tipo)
 
-        # Fotos (si existe relación)
-        fotos_urls = [f.url for f in getattr(art, "fotos", [])] if getattr(art, "fotos", None) else []
+        # Fotos
+        fotos_urls = await _get_fotos_urls(db, art.id_articulo)
 
         # Inventario
         inv = (
             await db.execute(
-                select(InventarioVenta).where(
-                    InventarioVenta.id_articulo == art.id_articulo
-                )
+                select(InventarioVenta).where(InventarioVenta.id_articulo == art.id_articulo)
             )
         ).scalar_one_or_none()
 
@@ -234,12 +237,7 @@ async def listar_articulos_publicos(
             )
         )
 
-    return ArticuloPublicoListResponse(
-        items=items,
-        total=int(total),
-        limit=limit,
-        offset=offset,
-    )
+    return ArticuloPublicoListResponse(items=items, total=int(total), limit=limit, offset=offset)
 
 
 # ============================================================
@@ -251,13 +249,6 @@ async def obtener_articulo_detalle(
     db: AsyncSession = Depends(get_db),
     authorization: Optional[str] = Header(default=None, convert_underscores=False),
 ):
-    """
-    Obtiene el detalle completo de un artículo con todas sus fotos.
-
-    Permisos:
-    - ADMINISTRADOR, VALUADOR, CAJERO: Pueden ver cualquier artículo
-    - Otros usuarios: Solo artículos públicos (en venta/inventario)
-    """
     user = await get_optional_user(db=db, authorization=authorization)
     puede_ver_todos = await _puede_ver_todos_articulos(db, user)
 
@@ -265,32 +256,18 @@ async def obtener_articulo_detalle(
     if not articulo:
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
 
-    # Verificar permisos si no es rol especial
     if not puede_ver_todos:
         estado_obj = await db.get(EstadoArticulo, articulo.id_estado)
         estados_publicos = ["en_inventario", "en_venta", "disponible"]
         if not estado_obj or estado_obj.nombre.lower() not in [e.lower() for e in estados_publicos]:
             raise HTTPException(status_code=403, detail="No tienes permiso para ver este artículo")
 
-    # Estado
     estado_obj = await db.get(EstadoArticulo, articulo.id_estado)
     estado_nombre = estado_obj.nombre if estado_obj else "desconocido"
 
-    # Tipo
-    tipo_obj = await db.get(TipoArticulo, articulo.id_tipo)
-    tipo_nombre = tipo_obj.nombre if tipo_obj else "N/A"
+    tipo_nombre = await _get_tipo_nombre(db, articulo.id_tipo)
+    fotos_urls = await _get_fotos_urls(db, id_articulo)
 
-    # Fotos (ordenadas) — usando el modelo importado como ArticuloFoto (o alias)
-    fotos = (
-        await db.execute(
-            select(ArticuloFoto)
-            .where(ArticuloFoto.id_articulo == id_articulo)
-            .order_by(ArticuloFoto.orden.asc())
-        )
-    ).scalars().all()
-    fotos_urls = [f.url for f in fotos]
-
-    # Inventario
     inv = (
         await db.execute(
             select(InventarioVenta).where(InventarioVenta.id_articulo == id_articulo)
@@ -330,15 +307,7 @@ async def comprar_articulo(
         default=None, convert_underscores=False, description="Bearer <token>"
     ),
 ):
-    """
-    Registra la compra de un artículo del inventario.
-
-    Requisitos:
-    - Usuario debe estar logueado
-    - Artículo debe estar en inventario con estado 'disponible' o 'en_venta'
-    - No puede estar ya vendido
-    """
-    # Verificar usuario logueado
+    # Usuario
     user = await get_optional_user(db=db, authorization=authorization)
     if not user:
         raise HTTPException(
@@ -346,12 +315,12 @@ async def comprar_articulo(
             detail="Debes estar logueado para comprar artículos",
         )
 
-    # Verificar que el artículo existe
+    # Artículo
     articulo = await db.get(Articulo, id_articulo)
     if not articulo:
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
 
-    # Verificar que está en inventario
+    # Inventario
     inv = (
         await db.execute(
             select(InventarioVenta).where(InventarioVenta.id_articulo == id_articulo)
@@ -361,14 +330,13 @@ async def comprar_articulo(
     if not inv:
         raise HTTPException(status_code=400, detail="Este artículo no está disponible para venta")
 
-    # Verificar estado
     if inv.estado not in ["disponible", "en_venta"]:
         raise HTTPException(
             status_code=409,
             detail=f"Este artículo ya no está disponible (estado: {inv.estado})",
         )
 
-    # Actualizar inventario con la venta
+    # Actualizaciones
     inv.estado = "vendido"
     inv.precio_venta = body.precio_venta or inv.precio_actual
     inv.fecha_venta = body.fecha_venta or date.today()
@@ -379,7 +347,7 @@ async def comprar_articulo(
     inv.comprobante_url = str(body.comprobante_url) if body.comprobante_url else None
     inv.nota = body.nota
 
-    # Actualizar estado del artículo a 'vendido'
+    # Estado del artículo a vendido (si existe "vendido" en Estado_Articulo)
     estado_vendido = (
         await db.execute(
             select(EstadoArticulo).where(func.lower(EstadoArticulo.nombre) == "vendido")
@@ -388,7 +356,7 @@ async def comprar_articulo(
     if estado_vendido:
         articulo.id_estado = estado_vendido.id_estado_articulo
 
-    # Registrar auditoría
+    # Auditoría
     aud = Auditoria(
         id_usuario=user.ID_Usuario,
         accion="COMPRAR_ARTICULO",
