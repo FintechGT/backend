@@ -1,30 +1,35 @@
 from datetime import datetime, timedelta
+from typing import Optional
+
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from passlib.context import CryptContext  # se mantiene aquí para centralizar el hashing
+from passlib.context import CryptContext  # centraliza el hashing
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models.user import User
 
 
+# bcrypt_sha256 por defecto; aún permite verificar bcrypt viejo
 pwd_context = CryptContext(
     schemes=["bcrypt_sha256", "bcrypt"],
+    default="bcrypt_sha256",   # <— importante
     deprecated="auto",
 )
 
 def hash_password(password: str) -> str:
-    """Genera un hash seguro de la contraseña del usuario."""
-    return pwd_context.hash(password)
+    """Genera un hash seguro sin límite de 72 bytes (bcrypt_sha256)."""
+    # fuerza el esquema al crear hashes nuevos
+    return pwd_context.hash(password, scheme="bcrypt_sha256")
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verifica que una contraseña coincida con su hash almacenado."""
+    """Verifica contra el esquema que indique el hash (bcrypt o bcrypt_sha256)."""
     return pwd_context.verify(password, hashed)
 
-def create_access_token(data: dict, expires_delta: int = None) -> str:
+def create_access_token(data: dict, expires_delta: Optional[int] = None) -> str:
     """
     Crea un token JWT con fecha de expiración.
     - data: información a codificar (ej. {"sub": str(user_id)})
