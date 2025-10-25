@@ -1,21 +1,9 @@
 # ============================================================
-# app/api/routers/articulos_publicos.py (sin dependencias a TipoArticulo)
+# app/api/routers/articulos_publicos.py
 # ============================================================
-"""
-Router público/semi-público para artículos.
-- Listar artículos (con filtros por estado/tipo/texto)
-- Ver detalle de artículo con fotos
-- Comprar artículo (requiere login)
-
-Permisos:
-- ADMINISTRADOR, VALUADOR, CAJERO: Ven TODOS los artículos
-- Usuario logueado sin rol especial: Solo artículos públicos/en venta
-- INVITADO (no logueado): Solo artículos públicos/en venta
-"""
-
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, date
 
 from fastapi import (
@@ -27,7 +15,8 @@ from fastapi import (
     status,
     Header,
 )
-from sqlalchemy import select, func, or_, text
+from sqlalchemy import select, func, or_, text, literal
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -57,8 +46,8 @@ from app.schemas.articulos_publicos import (
     ComprarArticuloOut,
 )
 
-router = APIRouter(prefix="/articulos", tags=["Articulos Publicos"])
-
+# Prefijo público no conflictivo
+router = APIRouter(prefix="/articulos-publicos", tags=["Articulos Publicos"])
 
 # ============================================================
 # Helpers de autorización
@@ -104,43 +93,51 @@ async def _puede_ver_todos_articulos(db: AsyncSession, user: Optional[User]) -> 
 
 
 # ============================================================
-# Helpers de datos sin depender de modelos que faltan
+# Helpers de datos
 # ============================================================
-async def _get_tipo_nombre(db: AsyncSession, id_tipo: int) -> str:
-    """
-    Obtiene el nombre del tipo desde la tabla Cat_Tipo_Articulo usando SQL crudo,
-    para evitar importar un modelo que no existe en tu proyecto.
-    """
+async def _get_tipos_nombres_batch(db: AsyncSession, id_tipos: List[int]) -> Dict[int, str]:
+    """Batch por SQL crudo para no depender del modelo Cat_Tipo_Articulo."""
+    if not id_tipos:
+        return {}
     try:
         res = await db.execute(
-            text("SELECT Nombre FROM Cat_Tipo_Articulo WHERE IdTipo = :id"),
-            {"id": id_tipo},
+            text("SELECT IdTipo, Nombre FROM Cat_Tipo_Articulo WHERE IdTipo IN :ids"),
+            {"ids": tuple(set(id_tipos))},
         )
-        row = res.first()
-        return row[0] if row and row[0] else "N/A"
+        rows = res.fetchall()
+        mapa = {int(r[0]): (r[1] or "N/A") for r in rows if r and r[0] is not None}
+        for t in id_tipos:
+            mapa.setdefault(int(t), "N/A")
+        return mapa
     except Exception:
-        # Si la tabla/columna se llama diferente, al menos no rompemos el API
-        return "N/A"
+        return {int(t): "N/A" for t in id_tipos}
 
 
-async def _get_fotos_urls(db: AsyncSession, id_articulo: int) -> List[str]:
-    """
-    Devuelve URLs de fotos. Si no existe el modelo ArticuloFoto, devuelve lista vacía.
-    """
-    if ArticuloFoto is None:
-        return []
-    try:
-        res = await db.execute(
-            select(ArticuloFoto).where(ArticuloFoto.id_articulo == id_articulo).order_by(ArticuloFoto.orden.asc())
-        )
-        fotos = res.scalars().all()
-        return [f.url for f in fotos if getattr(f, "url", None)]
-    except Exception:
-        return []
+async def _get_fotos_urls_batch(db: AsyncSession, ids: List[int]) -> Dict[int, List[str]]:
+    """Devuelve URLs de fotos por artículo en batch."""
+    if ArticuloFoto is None or not ids:
+        return {i: [] for i in ids}
+    res = await db.execute(
+        select(ArticuloFoto).where(ArticuloFoto.id_articulo.in_(ids)).order_by(ArticuloFoto.orden.asc())
+    )
+    out: Dict[int, List[str]] = {i: [] for i in ids}
+    for f in res.scalars().all():
+        if getattr(f, "url", None):
+            out.setdefault(f.id_articulo, []).append(f.url)
+    return out
+
+
+async def _get_inventarios_batch(db: AsyncSession, ids: List[int]) -> Dict[int, InventarioVenta]:
+    """Carga InventarioVenta por artículo en batch."""
+    if not ids:
+        return {}
+    res = await db.execute(select(InventarioVenta).where(InventarioVenta.id_articulo.in_(ids)))
+    invs = res.scalars().all()
+    return {inv.id_articulo: inv for inv in invs}
 
 
 # ============================================================
-# 1) LISTAR ARTÍCULOS (GET /articulos)
+# 1) LISTAR ARTÍCULOS (GET /articulos-publicos)
 # ============================================================
 @router.get("", response_model=ArticuloPublicoListResponse)
 async def listar_articulos_publicos(
@@ -158,78 +155,88 @@ async def listar_articulos_publicos(
     user = await get_optional_user(db=db, authorization=authorization)
     puede_ver_todos = await _puede_ver_todos_articulos(db, user)
 
-    # Query base SIN selectinload de relaciones que podrían no existir
+    EA = aliased(EstadoArticulo)
     stmt = select(Articulo)
 
-    # Visibilidad pública
+    need_estado_join = (not puede_ver_todos) or bool(estado)
+    if need_estado_join:
+        stmt = stmt.join(EA, EA.id_estado_articulo == Articulo.id_estado, isouter=True)
+
+    condiciones = []
+
     if not puede_ver_todos:
         estados_publicos = ["en_inventario", "en_venta", "disponible"]
-        stmt = (
-            stmt.join(
-                EstadoArticulo, EstadoArticulo.id_estado_articulo == Articulo.id_estado
-            )
-            .where(func.lower(EstadoArticulo.nombre).in_([e.lower() for e in estados_publicos]))
-        )
+        condiciones.append(func.lower(EA.nombre).in_([e.lower() for e in estados_publicos]))
 
-    # Filtros explícitos
     if estado:
-        stmt = (
-            stmt.join(
-                EstadoArticulo, EstadoArticulo.id_estado_articulo == Articulo.id_estado
-            )
-            .where(func.lower(EstadoArticulo.nombre) == estado.lower())
-        )
+        condiciones.append(func.lower(EA.nombre) == estado.lower())
 
     if id_tipo:
-        stmt = stmt.where(Articulo.id_tipo == id_tipo)
+        condiciones.append(Articulo.id_tipo == id_tipo)
 
     if q:
         like = f"%{q.lower()}%"
-        stmt = stmt.where(func.lower(Articulo.descripcion).like(like))
+        condiciones.append(func.lower(Articulo.descripcion).like(like))
 
     if solo_en_venta:
-        stmt = stmt.join(
-            InventarioVenta, InventarioVenta.id_articulo == Articulo.id_articulo
-        ).where(
-            or_(InventarioVenta.estado == "disponible", InventarioVenta.estado == "en_venta")
+        sub = (
+            select(literal(1))
+            .select_from(InventarioVenta)
+            .where(
+                InventarioVenta.id_articulo == Articulo.id_articulo,
+                or_(InventarioVenta.estado == "disponible", InventarioVenta.estado == "en_venta"),
+            )
+            .limit(1)
         )
+        condiciones.append(sub.exists())
+
+    if condiciones:
+        stmt = stmt.where(*condiciones)
 
     total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
     stmt = stmt.order_by(Articulo.id_articulo.desc()).limit(limit).offset(offset)
     articulos = (await db.execute(stmt)).scalars().all()
 
+    if not articulos:
+        return ArticuloPublicoListResponse(items=[], total=int(total), limit=limit, offset=offset)
+
+    ids = [a.id_articulo for a in articulos]
+    id_tipos = [a.id_tipo for a in articulos if getattr(a, "id_tipo", None) is not None]
+    id_estados = list({a.id_estado for a in articulos if getattr(a, "id_estado", None) is not None})
+
+    estados_map: Dict[int, str] = {}
+    if id_estados:
+        res_e = await db.execute(
+            select(EstadoArticulo.id_estado_articulo, EstadoArticulo.nombre)
+            .where(EstadoArticulo.id_estado_articulo.in_(id_estados))
+        )
+        for ide, nom in res_e.fetchall():
+            estados_map[int(ide)] = nom or "desconocido"
+
+    inv_map = await _get_inventarios_batch(db, ids)
+    fotos_map = await _get_fotos_urls_batch(db, ids)
+    tipos_map = await _get_tipos_nombres_batch(db, id_tipos)
+
     items: List[ArticuloPublicoListItem] = []
     for art in articulos:
-        # Estado
-        estado_obj = await db.get(EstadoArticulo, art.id_estado)
-        estado_nombre = estado_obj.nombre if estado_obj else "desconocido"
+        estado_nombre = estados_map.get(getattr(art, "id_estado", 0), "desconocido")
+        tipo_nombre = tipos_map.get(getattr(art, "id_tipo", 0), "N/A")
+        fotos_urls = fotos_map.get(art.id_articulo, [])
 
-        # Tipo (vía SQL crudo)
-        tipo_nombre = await _get_tipo_nombre(db, art.id_tipo)
-
-        # Fotos
-        fotos_urls = await _get_fotos_urls(db, art.id_articulo)
-
-        # Inventario
-        inv = (
-            await db.execute(
-                select(InventarioVenta).where(InventarioVenta.id_articulo == art.id_articulo)
-            )
-        ).scalar_one_or_none()
-
-        precio_venta = float(inv.precio_actual) if inv and inv.precio_actual else None
-        disponible_compra = bool(inv and inv.estado in ["disponible", "en_venta"])
+        inv = inv_map.get(art.id_articulo)
+        precio_venta = float(inv.precio_actual) if inv and getattr(inv, "precio_actual", None) else None
+        disponible_compra = bool(inv and getattr(inv, "estado", None) in ["disponible", "en_venta"])
 
         items.append(
             ArticuloPublicoListItem(
                 id_articulo=art.id_articulo,
-                id_tipo=art.id_tipo,
+                id_tipo=getattr(art, "id_tipo", None),
                 tipo_nombre=tipo_nombre,
                 descripcion=art.descripcion,
                 valor_estimado=float(art.valor_estimado),
-                valor_aprobado=float(art.valor_aprobado) if art.valor_aprobado else None,
-                condicion=art.condicion,
+                valor_aprobado=float(art.valor_aprobado) if getattr(art, "valor_aprobado", None) else None,
+                condicion=getattr(art, "condicion", None),
                 estado=estado_nombre,
                 fotos=fotos_urls,
                 precio_venta=precio_venta,
@@ -241,7 +248,7 @@ async def listar_articulos_publicos(
 
 
 # ============================================================
-# 2) DETALLE DE ARTÍCULO (GET /articulos/{id_articulo})
+# 2) DETALLE DE ARTÍCULO (GET /articulos-publicos/{id_articulo})
 # ============================================================
 @router.get("/{id_articulo}", response_model=ArticuloPublicoDetalle)
 async def obtener_articulo_detalle(
@@ -265,38 +272,44 @@ async def obtener_articulo_detalle(
     estado_obj = await db.get(EstadoArticulo, articulo.id_estado)
     estado_nombre = estado_obj.nombre if estado_obj else "desconocido"
 
-    tipo_nombre = await _get_tipo_nombre(db, articulo.id_tipo)
-    fotos_urls = await _get_fotos_urls(db, id_articulo)
+    # Tipo (vía SQL crudo, pero aquí solo 1)
+    tipos_map = await _get_tipos_nombres_batch(db, [articulo.id_tipo] if getattr(articulo, "id_tipo", None) else [])
+    tipo_nombre = tipos_map.get(getattr(articulo, "id_tipo", 0), "N/A")
 
+    # Fotos
+    fotos_map = await _get_fotos_urls_batch(db, [id_articulo])
+    fotos_urls = fotos_map.get(id_articulo, [])
+
+    # Inventario
     inv = (
         await db.execute(
             select(InventarioVenta).where(InventarioVenta.id_articulo == id_articulo)
         )
     ).scalar_one_or_none()
 
-    precio_venta = float(inv.precio_actual) if inv and inv.precio_actual else None
-    disponible_compra = bool(inv and inv.estado in ["disponible", "en_venta"])
-    fecha_ingreso_inventario = inv.fecha_ingreso if inv else None
+    precio_venta = float(inv.precio_actual) if inv and getattr(inv, "precio_actual", None) else None
+    disponible_compra = bool(inv and getattr(inv, "estado", None) in ["disponible", "en_venta"])
+    fecha_ingreso_inventario: Optional[date] = getattr(inv, "fecha_ingreso", None) if inv else None
 
     return ArticuloPublicoDetalle(
         id_articulo=articulo.id_articulo,
-        id_solicitud=articulo.id_solicitud,
-        id_tipo=articulo.id_tipo,
+        id_solicitud=getattr(articulo, "id_solicitud", None),
+        id_tipo=getattr(articulo, "id_tipo", None),
         tipo_nombre=tipo_nombre,
         descripcion=articulo.descripcion,
         valor_estimado=float(articulo.valor_estimado),
-        valor_aprobado=float(articulo.valor_aprobado) if articulo.valor_aprobado else None,
-        condicion=articulo.condicion,
+        valor_aprobado=float(articulo.valor_aprobado) if getattr(articulo, "valor_aprobado", None) else None,
+        condicion=getattr(articulo, "condicion", None),
         estado=estado_nombre,
         fotos=fotos_urls,
         precio_venta=precio_venta,
         disponible_compra=disponible_compra,
-        fecha_ingreso_inventario=fecha_ingreso_inventario.isoformat() if fecha_ingreso_inventario else None,
+        fecha_ingreso_inventario=fecha_ingreso_inventario,
     )
 
 
 # ============================================================
-# 3) COMPRAR ARTÍCULO (POST /articulos/{id_articulo}/comprar)
+# 3) COMPRAR ARTÍCULO (POST /articulos-publicos/{id_articulo}/comprar)
 # ============================================================
 @router.post("/{id_articulo}/comprar", response_model=ComprarArticuloOut)
 async def comprar_articulo(
@@ -330,15 +343,15 @@ async def comprar_articulo(
     if not inv:
         raise HTTPException(status_code=400, detail="Este artículo no está disponible para venta")
 
-    if inv.estado not in ["disponible", "en_venta"]:
+    if getattr(inv, "estado", None) not in ["disponible", "en_venta"]:
         raise HTTPException(
             status_code=409,
-            detail=f"Este artículo ya no está disponible (estado: {inv.estado})",
+            detail=f"Este artículo ya no está disponible (estado: {getattr(inv, 'estado', None)})",
         )
 
     # Actualizaciones
     inv.estado = "vendido"
-    inv.precio_venta = body.precio_venta or inv.precio_actual
+    inv.precio_venta = body.precio_venta or getattr(inv, "precio_actual", None)
     inv.fecha_venta = body.fecha_venta or date.today()
     inv.medio_pago = body.medio_pago
     inv.ref_bancaria = body.ref_bancaria
@@ -381,6 +394,46 @@ async def comprar_articulo(
         id_inventario=inv.id_inventario,
         estado="vendido",
         precio_venta=float(inv.precio_venta or 0),
-        fecha_venta=inv.fecha_venta.isoformat() if inv.fecha_venta else None,
+        fecha_venta=inv.fecha_venta,
         mensaje="Compra registrada exitosamente",
+    )
+
+
+# ============================================================
+# (Opcional) Alias GET en /articulos para frontend sin cambios
+# ============================================================
+public_alias = APIRouter(prefix="/articulos", tags=["Articulos Publicos (alias)"])
+
+@public_alias.get("", response_model=ArticuloPublicoListResponse)
+async def _alias_listar_articulos_publicos(
+    estado: Optional[str] = Query(None),
+    id_tipo: Optional[int] = Query(None),
+    q: Optional[str] = Query(None),
+    solo_en_venta: Optional[bool] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(default=None, convert_underscores=False),
+):
+    return await listar_articulos_publicos(
+        estado=estado,
+        id_tipo=id_tipo,
+        q=q,
+        solo_en_venta=solo_en_venta,
+        limit=limit,
+        offset=offset,
+        db=db,
+        authorization=authorization,
+    )
+
+@public_alias.get("/{id_articulo}", response_model=ArticuloPublicoDetalle)
+async def _alias_obtener_articulo_detalle(
+    id_articulo: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(default=None, convert_underscores=False),
+):
+    return await obtener_articulo_detalle(
+        id_articulo=id_articulo,
+        db=db,
+        authorization=authorization,
     )

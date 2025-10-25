@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field, HttpUrl
 class ArticuloPublicoListItem(BaseModel):
     """Item de artículo en el listado público"""
     id_articulo: int
-    id_tipo: int
-    tipo_nombre: str
+    id_tipo: Optional[int] = Field(default=None)
+    tipo_nombre: str = Field(default="N/A")
     descripcion: str
     valor_estimado: float
     valor_aprobado: Optional[float] = None
@@ -27,6 +27,7 @@ class ArticuloPublicoListItem(BaseModel):
     disponible_compra: bool = Field(False, description="Si el artículo está disponible para compra")
 
     model_config = {
+        "from_attributes": True,
         "json_schema_extra": {
             "example": {
                 "id_articulo": 101,
@@ -38,8 +39,8 @@ class ArticuloPublicoListItem(BaseModel):
                 "condicion": "Usado, buen estado",
                 "estado": "en_venta",
                 "fotos": [
-                    "https://cloudinary.com/foto1.jpg",
-                    "https://cloudinary.com/foto2.jpg"
+                    "https://cdn.example.com/foto1.jpg",
+                    "https://cdn.example.com/foto2.jpg"
                 ],
                 "precio_venta": 1400.0,
                 "disponible_compra": True
@@ -55,6 +56,10 @@ class ArticuloPublicoListResponse(BaseModel):
     limit: int
     offset: int
 
+    model_config = {
+        "from_attributes": True
+    }
+
 
 # ============================================================
 # DETALLE DE ARTÍCULO
@@ -62,9 +67,9 @@ class ArticuloPublicoListResponse(BaseModel):
 class ArticuloPublicoDetalle(BaseModel):
     """Detalle completo de un artículo"""
     id_articulo: int
-    id_solicitud: int
-    id_tipo: int
-    tipo_nombre: str
+    id_solicitud: Optional[int] = None
+    id_tipo: Optional[int] = None
+    tipo_nombre: str = Field(default="N/A")
     descripcion: str
     valor_estimado: float
     valor_aprobado: Optional[float] = None
@@ -73,9 +78,10 @@ class ArticuloPublicoDetalle(BaseModel):
     fotos: List[str] = Field(default_factory=list, description="URLs de todas las fotos")
     precio_venta: Optional[float] = Field(None, description="Precio de venta si está en inventario")
     disponible_compra: bool = Field(False, description="Si está disponible para compra")
-    fecha_ingreso_inventario: Optional[str] = Field(None, description="Fecha de ingreso al inventario")
+    fecha_ingreso_inventario: Optional[date] = Field(None, description="Fecha de ingreso al inventario")
 
     model_config = {
+        "from_attributes": True,
         "json_schema_extra": {
             "example": {
                 "id_articulo": 101,
@@ -88,9 +94,9 @@ class ArticuloPublicoDetalle(BaseModel):
                 "condicion": "Usado, buen estado",
                 "estado": "en_venta",
                 "fotos": [
-                    "https://cloudinary.com/foto1.jpg",
-                    "https://cloudinary.com/foto2.jpg",
-                    "https://cloudinary.com/foto3.jpg"
+                    "https://cdn.example.com/foto1.jpg",
+                    "https://cdn.example.com/foto2.jpg",
+                    "https://cdn.example.com/foto3.jpg"
                 ],
                 "precio_venta": 1400.0,
                 "disponible_compra": True,
@@ -115,6 +121,7 @@ class ComprarArticuloIn(BaseModel):
     nota: Optional[str] = Field(None, max_length=500, description="Observaciones adicionales")
 
     model_config = {
+        "from_attributes": True,
         "json_schema_extra": {
             "example": {
                 "precio_venta": 1400.0,
@@ -134,10 +141,11 @@ class ComprarArticuloOut(BaseModel):
     id_inventario: int
     estado: str = Field(description="Estado del artículo tras la compra (vendido)")
     precio_venta: float
-    fecha_venta: Optional[str] = None
+    fecha_venta: Optional[date] = None
     mensaje: str
 
     model_config = {
+        "from_attributes": True,
         "json_schema_extra": {
             "example": {
                 "id_articulo": 101,
