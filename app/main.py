@@ -6,6 +6,9 @@ from fastapi import FastAPI, APIRouter, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 import re
+# Agregar en la sección de imports (alrededor de la línea 50-60)
+from app.api.routers.inventario_completo import router as inventario_completo_router
+
 
 # Configuración y modelos base
 from app.core.config import settings
@@ -168,6 +171,8 @@ app.include_router(mis_prestamos_pagos_router)
 app.include_router(auditoria_router)
 app.include_router(admin_solicitudes_router)
 app.include_router(articulos_publicos_router)
+# Agregar en la sección de registro de routers (alrededor de la línea 150-180)
+app.include_router(inventario_completo_router)
 if seguridad_router:
     app.include_router(seguridad_router)
 try:
@@ -203,4 +208,5 @@ try:
     print("RUTAS REGISTRADAS:", rutas)
 except Exception:
     pass
+
 
