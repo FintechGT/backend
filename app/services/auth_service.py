@@ -1,56 +1,71 @@
 # app/services/auth_service.py
 from typing import Optional
 
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models.user import User
 from app.schemas.auth import UserRegister
-from app.core.security import hash_password, verify_password  # usar helpers centralizados
+from app.core.security import hash_password, verify_password  # helpers centralizados
 
-MAX_BCRYPT_WARN = 72  # solo advertencia (no bloquea)
+logger = logging.getLogger(__name__)
+MAX_BCRYPT_WARN = 72  # solo diagnóstico, no bloquea
+
+
+def _norm(s: str) -> str:
+    return (s or "").strip()
 
 
 class AuthService:
     @staticmethod
     async def register_user(data: UserRegister, db: AsyncSession) -> User:
         """
-        Crea un usuario con contraseña (registro normal).
+        Registro normal con contraseña.
         - Normaliza email/username
         - Evita duplicados case-insensitive
-        - Hashea con bcrypt_sha256 (definido en app/core/security.py)
+        - Hashea con bcrypt_sha256 (definido en core/security.py)
+        - Maneja IntegrityError por índice único
         """
-        email = (data.email or "").strip().lower()
-        username = (data.username or "").strip()
+        email = _norm(data.email).lower()
+        username = _norm(data.username)
         password = data.password or ""
 
-        # (Opcional) Advertencia de diagnóstico si supera 72 bytes (no bloquea)
+        # Diagnóstico opcional (no bloquea)
         try:
             b = len(password.encode("utf-8"))
             if b > MAX_BCRYPT_WARN:
-                print(f"[AuthService.register_user] Advertencia: password con {b} bytes (>72).")
+                logger.warning("[AuthService.register_user] password tiene %d bytes (>72).", b)
         except Exception:
             pass
 
-        # ¿Existe ya el correo? (case-insensitive)
-        exists = await db.execute(
-            select(User).where(func.lower(User.Correo) == email)
-        )
+        # Chequeo previo (no confiamos solo en esto; también manejamos IntegrityError)
+        exists = await db.execute(select(User).where(func.lower(User.Correo) == email))
         if exists.scalar_one_or_none():
+            # Puedes elegir devolver None y que el router lance HTTP 409
+            # Aquí preferimos lanzar y que el router lo convierta si quiere.
             raise ValueError("El correo ya está en uso")
 
-        # Hash con política central (bcrypt_sha256 preferido)
-        hashed_password = hash_password(password)
+        hashed_password = hash_password(password)  # bcrypt_sha256 forzado en security.py
 
         new_user = User(
             Nombre=username,
             Correo=email,
-            Contrasena_hash=hashed_password,
-            Verificado=True,     # ajusta según tu flujo
-            Estado_Activo=True,  # en alta por defecto
+            Contrasena_hash=hashed_password,  # <-- asegúrate que el nombre de columna sea este
+            Verificado=True,      # ajusta según tu flujo
+            Estado_Activo=True,   # alta por defecto
         )
+
         db.add(new_user)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError as ie:
+            # Concurrencia o duplicado de correo
+            await db.rollback()
+            logger.info("Registro duplicado detectado para email=%s: %s", email, ie)
+            raise ValueError("El correo ya está en uso") from ie
+
         await db.refresh(new_user)
         return new_user
 
@@ -62,32 +77,28 @@ class AuthService:
         Devuelve el usuario si la contraseña es válida.
         - Normaliza email
         - Busca case-insensitive
-        - Soporta cuentas creadas por Google (sin hash) devolviendo None
-        - Respeta Estado_Activo si existe en el modelo
+        - Respeta Estado_Activo (si existe)
+        - Soporta bcrypt y bcrypt_sha256 en verify()
         """
-        email = (email or "").strip().lower()
+        email_n = _norm(email).lower()
 
-        result = await db.execute(
-            select(User).where(func.lower(User.Correo) == email)
-        )
+        result = await db.execute(select(User).where(func.lower(User.Correo) == email_n))
         user = result.scalar_one_or_none()
         if not user:
             return None
 
-        # Si hay flag de estado y está inactiva, no permitir login
         if hasattr(user, "Estado_Activo") and user.Estado_Activo is False:
             return None
 
-        # Cuentas creadas por Google podrían no tener hash "real"
         stored_hash = getattr(user, "Contrasena_hash", None) or ""
         if not stored_hash:
+            # cuentas Google-only o datos incompletos
             return None
 
         try:
-            # Verificación con política central (soporta bcrypt_sha256 y bcrypt legado)
-            ok = verify_password(password, stored_hash)
-        except Exception:
-            # Hash malformado/algoritmo distinto → tratar como credenciales inválidas
+            ok = verify_password(password, stored_hash)  # detecta esquema por el hash
+        except Exception as ex:
+            logger.warning("Fallo verificando hash para user_id=%s: %s", getattr(user, "ID_Usuario", None), ex)
             return None
 
         return user if ok else None
