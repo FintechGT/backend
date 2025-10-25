@@ -23,8 +23,10 @@ requests==2.32.3
 cloudinary==1.41.0
 python-multipart==0.0.9
 
-# PDF / Firma (si los usas)
+# PDF / Firma (si los usas)cs
 weasyprint==66.0
 reportlab==4.1.0
 pyHanko==0.31.0
 pyhanko-certvalidator==0.29.0
+google-auth==2.34.0
+requests==2.32.3 
